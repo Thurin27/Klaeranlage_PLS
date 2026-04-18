@@ -121,6 +121,39 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    # === ARMATUREN UI ===
+    # Dropdown zur Auswahl einer Armatur für die Wartungsanmeldung.
+    # Die Optionen werden im Render-Block synchron gehalten – dort ist der
+    # zentrale Datenkatalog ARMATUREN definiert.
+    armatur_auswahl = mo.ui.dropdown(
+        options=[
+            "—",
+            "HS-101  Plattenschieber  Zulauf Hebewerk",
+            "SV-201  Regelklappe  Regenüberlauf",
+            "HS-202  Plattenschieber  Zulauf Vorklärung",
+            "RK-301  Rückschlagklappe  Druckstutzen P1.1",
+            "V-401   Absperrschieber  Interne Rezirkulation",
+            "V-402   Absperrschieber  Rücklaufschlamm",
+            "V-501   Absperrschieber  Überschussschlamm",
+            "V-601   Absperrschieber  Primärschlamm",
+            "V-001   Absperrschieber  Druckstutzen P-001 (PW Talstr.)",
+            "V-002   Absperrschieber  Druckstutzen P-002 (PW Talstr.)",
+            "RK-001  Rückschlagklappe P-001 (PW Talstr.)",
+            "RK-002  Rückschlagklappe P-002 (PW Talstr.)",
+            "V-003   Absperrschieber  Abzweig Speicherbecken 1",
+            "V-004   Absperrschieber  Abzweig Speicherbecken 2",
+            "LA-001  Be-/Entlüftungsventil  Hauptleitung DN 200",
+            "LA-002  Be-/Entlüftungsventil  Hauptleitung DN 125",
+        ],
+        value="—",
+        label="Armatur auswählen",
+    )
+    wartung_btn = mo.ui.run_button(label="🔧 Wartung bei Leitwarte anmelden", kind="warn")
+    return armatur_auswahl, wartung_btn
+
+
+@app.cell
+def _(mo):
     # === PERSISTENTER ZUSTAND mit mo.state ===
     get_sim_state, set_sim_state = mo.state(None)
     return get_sim_state, set_sim_state
@@ -447,6 +480,7 @@ def _(
 def _(
     abschlag_schwelle, btn_1h, btn_24h, btn_6h, btn_7d, btn_reset,
     detail_p11, detail_p51,
+    armatur_auswahl, wartung_btn,
     faellmittel, get_sim_state,
     lab_analyse_btn, lab_kal_btn, lab_show_isv, lab_show_proto, lab_show_qs, lab_woche_btn,
     mod_anammox, mod_faulturm, mod_intermit, mod_membran, mod_nh4_sensor,
@@ -829,12 +863,13 @@ def _(
             mo.Html(f'<div class="pls"><p style="font-size:0.9em">Simulationszeit: <strong>{sim_zeit}</strong> ({th:.0f} Stunden gesamt)</p></div>'),
 
             # --- ZULAUFBEDINGUNGEN ---
+            # Regler stehen sichtbar im Vordergrund, der technische Hintergrund
+            # wird über ein Accordion auf Wunsch ausgeklappt.
             mo.Html('<div class="pls"><div class="pls-c"><h3>🌊 Zulaufbedingungen & Abschlag</h3></div></div>'),
-            mo.hstack([
-                mo.vstack([zulauf_q, regen_faktor, temperatur, abschlag_schwelle]),
-                mo.Html(f'''<div class="pls" style="font-size:0.85em">
+            mo.vstack([zulauf_q, regen_faktor, temperatur, abschlag_schwelle]),
+            mo.accordion({
+                "💡 Technischer Hintergrund – Zulauf · Regen · Temperatur · Abschlag": mo.Html('''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <h3>Technischer Hintergrund</h3>
                         <p><strong>Zulauf Q:</strong> Trockenwetterzulauf × Regenfaktor. Die Zulaufpumpe P1.1
                         (FU-geregelt) passt ihre Drehzahl automatisch an den Wasserstand im Pumpensumpf an.</p>
                         <p><strong>Regenfaktor:</strong> Faktor 1.0 = Trockenwetter, 2.0 = starker Regen,
@@ -846,16 +881,17 @@ def _(
                         direkt in den Vorfluter abgeschlagen – nur teilgereinigt!</p>
                     </div>
                 </div>'''),
-            ]),
+            }),
             mo.Html(f'<div class="pls">{abschlag_html}</div>') if abschlag_aktiv else mo.Html(""),
 
             # --- BIOLOGISCHE STUFE ---
+            # Drei einzeln aufklappbare Abschnitte; multiple=True erlaubt das
+            # parallele Öffnen z.B. von O₂ und RS zum Vergleich.
             mo.Html('<div class="pls"><div class="pls-c"><h3>🔬 Biologische Stufe</h3></div></div>'),
-            mo.hstack([
-                mo.vstack([o2_soll, rs_verhaeltnis, ues_menge]),
-                mo.Html(f'''<div class="pls" style="font-size:0.85em">
+            mo.vstack([o2_soll, rs_verhaeltnis, ues_menge]),
+            mo.accordion({
+                "💡 O₂-Sollwert → Gebläse & Belüftung": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <h3>O₂-Sollwert → Gebläse & Belüftung</h3>
                         <p>Der O₂-Sollwert wird über einen <strong>PID-Regler</strong> gehalten.
                         Stellglied ist das <strong>Drehkolbengebläse</strong> (FU-geregelt).</p>
                         {vtbl(
@@ -866,8 +902,9 @@ def _(
                         <p>Höherer O₂ → mehr Luft → bessere Nitrifikation, aber auch höherer Energieverbrauch
                         und bei O₂ > 3 mg/L verschlechterte Denitrifikation (ISV steigt).</p>
                     </div>
+                </div>'''),
+                "💡 RS-Verhältnis → Rücklaufschlammpumpe P3.1": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <h3>RS-Verhältnis → Rücklaufschlammpumpe P3.1</h3>
                         <p>Das RS-Verhältnis bestimmt den Volumenstrom der
                         <strong>KSB Sewatec RS-Pumpe</strong> (FU-geregelt).</p>
                         {vtbl(
@@ -879,8 +916,9 @@ def _(
                         aber dünnerer RS → niedrigerer TS im Belebungsbecken. Außerdem steigt
                         die hydraulische Belastung der Nachklärung.</p>
                     </div>
+                </div>'''),
+                "💡 Überschussschlamm → ESP P5.1 (Seepex BN 52-6L)": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <h3>Überschussschlamm → ESP P5.1 (Seepex BN 52-6L)</h3>
                         <p>Die ÜS-Abzugsmenge bestimmt TS und Schlammalter.
                         Gefördert durch die <strong>Exzenterschneckenpumpe P5.1</strong> (drehzahlgeregelt).</p>
                         {vtbl(
@@ -893,15 +931,14 @@ def _(
                         gefährdet die Nitrifikation! Zu wenig ÜS → hoher TS, ISV steigt → Blähschlammgefahr.</p>
                     </div>
                 </div>'''),
-            ]),
+            }, multiple=True),
 
             # --- CHEMISCHE STUFE ---
             mo.Html('<div class="pls"><div class="pls-c"><h3>🧪 Chemische Stufe</h3></div></div>'),
-            mo.hstack([
-                mo.vstack([faellmittel]),
-                mo.Html(f'''<div class="pls" style="font-size:0.85em">
+            mo.vstack([faellmittel]),
+            mo.accordion({
+                "💡 Fällmitteldosierung → Kolbenmembranpumpe P7.1": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <h3>Fällmitteldosierung → Kolbenmembranpumpe P7.1</h3>
                         <p>Die Dosierung von <strong>FeCl₃ 40%</strong> (ρ = 1,42 kg/L) erfolgt über die
                         <strong>ProMinent Sigma S2Cb</strong> (Kolbenmembranpumpe). Die Hublänge wird
                         proportional zum Dosierstrom eingestellt.</p>
@@ -916,7 +953,7 @@ def _(
                         (pH aktuell: {c['ph_ab']:.2f}). Bei pH &lt; 6,8 springt die Kalkmilchpumpe P9.1 an.</p>
                     </div>
                 </div>'''),
-            ]),
+            }),
 
             # --- IST/ZIEL-TABELLE ---
             mo.callout(mo.md(f"""
@@ -1721,6 +1758,8 @@ def _(
         e_spar = max(0, 500 + c["Q_zu"] * o2_soll.value * 0.8 / 1000 + (c["Q_zu"] + c["Q_rs"]) * 0.02 - e.get("e_gesamt", 0))
 
         modifikationen = mo.vstack([
+            # Dashboard-Kopf: Investitions-/Betriebskosten-/Energiebilanz bleibt
+            # unabhängig vom gewählten Unter-Tab sichtbar.
             mo.Html(f'''<div class="pls">
             <div class="pls-c"><h3>🏗️ Anlagenmodifikationen – Virtueller Umbau</h3>
                 <p style="font-size:0.9em;margin:6px 0">
@@ -1739,38 +1778,42 @@ def _(
             </div>
             </div>'''),
 
-            # Messtechnik
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#00b894"><h3 style="color:#00b894">🟢 Messtechnik & Regelungsoptimierung</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Geringe Investition, schneller Effekt, oft die wirtschaftlichste Maßnahme.</p></div></div>'),
-            mo.hstack([mod_p_online, mod_nh4_sensor, mod_spektral, mod_truebung], justify="start", gap=0.5),
-            mo.Html(f'''<div class="pls"><div class="pls-g2">
-                {mod_card("p_online", mod_p_online)}
-                {mod_card("nh4_sensor", mod_nh4_sensor)}
-            </div><div class="pls-g2">
-                {mod_card("spektral", mod_spektral)}
-                {mod_card("truebung", mod_truebung)}
-            </div></div>'''),
-
-            # Verfahrenstechnik
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#0984e3">🔵 Verfahrenstechnische Erweiterungen</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Mittlere Investition, erhebliche Betriebsverbesserung.</p></div></div>'),
-            mo.hstack([mod_membran, mod_turbo, mod_intermit, mod_anammox], justify="start", gap=0.5),
-            mo.Html(f'''<div class="pls"><div class="pls-g2">
-                {mod_card("membran", mod_membran)}
-                {mod_card("turbo", mod_turbo)}
-            </div><div class="pls-g2">
-                {mod_card("intermit", mod_intermit)}
-                {mod_card("anammox", mod_anammox)}
-            </div></div>'''),
-
-            # Große Umbauten
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#a29bfe"><h3 style="color:#a29bfe">🟣 Größere Umbauten & Neubauten</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Hohe Investition, transformative Wirkung.</p></div></div>'),
-            mo.hstack([mod_stufe4, mod_faulturm, mod_pv], justify="start", gap=0.5),
-            mo.Html(f'''<div class="pls"><div class="pls-g2">
-                {mod_card("stufe4", mod_stufe4)}
-                {mod_card("faulturm", mod_faulturm)}
-            </div><div class="pls-g2">
-                {mod_card("pv", mod_pv)}
-                <div></div>
-            </div></div>'''),
+            # Drei Kategorien als Unter-Tabs: Messtechnik / Verfahrenstechnik / Umbauten.
+            mo.ui.tabs({
+                "🟢 Messtechnik": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#00b894"><h3 style="color:#00b894">🟢 Messtechnik & Regelungsoptimierung</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Geringe Investition, schneller Effekt, oft die wirtschaftlichste Maßnahme.</p></div></div>'),
+                    mo.hstack([mod_p_online, mod_nh4_sensor, mod_spektral, mod_truebung], justify="start", gap=0.5),
+                    mo.Html(f'''<div class="pls"><div class="pls-g2">
+                        {mod_card("p_online", mod_p_online)}
+                        {mod_card("nh4_sensor", mod_nh4_sensor)}
+                    </div><div class="pls-g2">
+                        {mod_card("spektral", mod_spektral)}
+                        {mod_card("truebung", mod_truebung)}
+                    </div></div>'''),
+                ]),
+                "🔵 Verfahrenstechnik": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#0984e3">🔵 Verfahrenstechnische Erweiterungen</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Mittlere Investition, erhebliche Betriebsverbesserung.</p></div></div>'),
+                    mo.hstack([mod_membran, mod_turbo, mod_intermit, mod_anammox], justify="start", gap=0.5),
+                    mo.Html(f'''<div class="pls"><div class="pls-g2">
+                        {mod_card("membran", mod_membran)}
+                        {mod_card("turbo", mod_turbo)}
+                    </div><div class="pls-g2">
+                        {mod_card("intermit", mod_intermit)}
+                        {mod_card("anammox", mod_anammox)}
+                    </div></div>'''),
+                ]),
+                "🟣 Umbauten": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#a29bfe"><h3 style="color:#a29bfe">🟣 Größere Umbauten & Neubauten</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Hohe Investition, transformative Wirkung.</p></div></div>'),
+                    mo.hstack([mod_stufe4, mod_faulturm, mod_pv], justify="start", gap=0.5),
+                    mo.Html(f'''<div class="pls"><div class="pls-g2">
+                        {mod_card("stufe4", mod_stufe4)}
+                        {mod_card("faulturm", mod_faulturm)}
+                    </div><div class="pls-g2">
+                        {mod_card("pv", mod_pv)}
+                        <div></div>
+                    </div></div>'''),
+                ]),
+            }, lazy=True),
         ])
 
         # ====== LABOR TAB ======
@@ -2146,6 +2189,7 @@ def _(
 
         # === LABOR TAB ZUSAMMENBAUEN ===
         labor = mo.vstack([
+            # Header bleibt über den Unter-Tabs sichtbar.
             mo.Html(f'''<div class="pls"><div class="pls-c">
                 <h3>🔬 Betriebslabor – Analysentechnik & Qualitätssicherung</h3>
                 <p style="font-size:0.9em;margin:6px 0">
@@ -2156,29 +2200,34 @@ def _(
                 </p>
             </div></div>'''),
 
-            # Analysen-Bereich
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#00b894"><h3 style="color:#00b894">🧪 Probenahme & Analyse</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Führe eine virtuelle Probenahme mit Doppelbestimmung durch. Jeder Klick = neue Probe mit realistischer Messstreuung.</p></div></div>'),
-            mo.hstack([lab_analyse_btn], justify="start"),
-            mo.Html(f'<div class="pls">{analysen_html}</div>') if analysen_html else mo.Html(""),
+            # Vier Arbeitsbereiche als Unter-Tabs.
+            mo.ui.tabs({
+                "🧪 Analytik": mo.vstack([
+                    # Analysen-Bereich
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#00b894"><h3 style="color:#00b894">🧪 Probenahme & Analyse</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Führe eine virtuelle Probenahme mit Doppelbestimmung durch. Jeder Klick = neue Probe mit realistischer Messstreuung.</p></div></div>'),
+                    mo.hstack([lab_analyse_btn], justify="start"),
+                    mo.Html(f'<div class="pls">{analysen_html}</div>') if analysen_html else mo.Html(""),
 
-            # Methodensteckbriefe
-            mo.Html(f'''<div class="pls"><div class="pls-c"><h3>📖 Analysenmethoden (Steckbriefe)</h3></div>
-            <div class="pls-g3">{methoden_cards}</div></div>'''),
-
-            # ISV
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#e17055"><h3 style="color:#e17055">🔬 Schlammanalytik</h3></div></div>'),
-            lab_show_isv,
-            isv_panel,
-
-            # Eigenüberwachung
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#74b9ff"><h3 style="color:#74b9ff">📋 Eigenüberwachung & Probenahmeplan</h3></div></div>'),
-            mo.hstack([lab_show_proto, lab_woche_btn], justify="start", gap=1),
-            proto_panel,
-
-            # QS
-            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#a29bfe"><h3 style="color:#a29bfe">📈 Qualitätssicherung</h3></div></div>'),
-            mo.hstack([lab_show_qs, lab_kal_btn], justify="start", gap=1),
-            qs_panel,
+                    # Methodensteckbriefe
+                    mo.Html(f'''<div class="pls"><div class="pls-c"><h3>📖 Analysenmethoden (Steckbriefe)</h3></div>
+                    <div class="pls-g3">{methoden_cards}</div></div>'''),
+                ]),
+                "🔬 Schlammanalytik": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#e17055"><h3 style="color:#e17055">🔬 Schlammanalytik</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">ISV-Absetzversuch nach DIN 38414 – Kenngröße für Schlammeigenschaften und Blähschlammgefahr.</p></div></div>'),
+                    lab_show_isv,
+                    isv_panel,
+                ]),
+                "📋 Eigenüberwachung": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#74b9ff"><h3 style="color:#74b9ff">📋 Eigenüberwachung & Probenahmeplan</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Wochenbericht nach SüwVO Abw NRW mit Probenahmeplan, Analysenergebnissen und Grenzwertkontrolle.</p></div></div>'),
+                    mo.hstack([lab_show_proto, lab_woche_btn], justify="start", gap=1),
+                    proto_panel,
+                ]),
+                "📈 Qualitätssicherung": mo.vstack([
+                    mo.Html('<div class="pls"><div class="pls-c" style="border-color:#a29bfe"><h3 style="color:#a29bfe">📈 Qualitätssicherung</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Kalibrierung, Kontrollkarten und Fehlersuche bei Analysenmethoden.</p></div></div>'),
+                    mo.hstack([lab_show_qs, lab_kal_btn], justify="start", gap=1),
+                    qs_panel,
+                ]),
+            }, lazy=True),
         ])
 
         # === FLIESSSCHEMA TAB ===
@@ -2776,19 +2825,829 @@ def _(
 </svg>
 </div>''')
 
+        # ====== AUSSENANLAGEN TAB ======
+        # Externe Pumpwerke im Einzugsgebiet – Fernwirktechnik / Außenstation PLS
+        rf = regen_faktor.value  # aktueller Regenfaktor aus Zulauf-Tab
+        import math as _math
+
+        # --- Kenndaten Druckrohrleitung DN 300 ---
+        DN = 0.300  # m, Innendurchmesser
+        A_DN = _math.pi * (DN / 2) ** 2  # m²
+        v_TW = 0.6   # m/s bei Trockenwetter
+        v_SR = 1.8   # m/s bei Starkregen
+        Q_TW_Ls = A_DN * v_TW * 1000   # L/s  ≈ 42,4
+        Q_SR_Ls = A_DN * v_SR * 1000   # L/s  ≈ 127,2
+
+        # Aktuelle Fließgeschwindigkeit (linear zwischen TW und SR je nach Regenfaktor)
+        # rf=1.0 → TW ; rf=3.0 → SR
+        v_akt = v_TW + (v_SR - v_TW) * max(0, min(1, (rf - 1) / 2))
+        Q_akt_Ls = A_DN * v_akt * 1000
+
+        # --- Beckendaten Bahnhofstraße (Baujahr 1987, knapp dimensioniert) ---
+        L_bhf, B_bhf, T_bhf = 8.0, 5.0, 5.0  # m
+        V_bhf = L_bhf * B_bhf * T_bhf  # = 200 m³
+        V_soll_SR = Q_SR_Ls / 1000 * 30 * 60  # Speicher 30 min bei SR ≈ 229 m³
+
+        # Füllstand-Simulation: vereinfacht, nur Ist-Zustand als Funktion von rf
+        # TW: Becken stabil bei ~25 %; RF=2: ~60 %; RF=3: ~95 %
+        fuell_pct = min(98, 25 + (rf - 1) * 35)
+        h_ist = fuell_pct / 100 * T_bhf
+        V_ist = fuell_pct / 100 * V_bhf
+
+        # Pumpen-Status
+        pumpen_an = rf >= 1.2
+        if rf < 1.2:
+            pw_status, pw_status_farbe = "Grundlast (1 Pumpe intermittierend)", "#00b894"
+        elif rf < 2.5:
+            pw_status, pw_status_farbe = "Regenbetrieb (P1 Dauerlauf)", "#fdcb6e"
+        else:
+            pw_status, pw_status_farbe = "STARKREGEN – P1+P2 Volllast", "#e17055"
+
+        # Warn-/Alarmschwelle
+        if fuell_pct > 90:
+            bhf_alarm = '<div class="pls-alarm" style="background:rgba(225,112,85,0.2);border-color:#e17055"><strong>🚨 KRITISCH:</strong> Beckenfüllstand > 90 % – Überlaufgefahr!</div>'
+        elif fuell_pct > 70:
+            bhf_alarm = '<div class="pls-alarm" style="background:rgba(253,203,110,0.15);border-color:#fdcb6e"><strong>⚠️ WARNUNG:</strong> Erhöhter Füllstand – Kapazitätsreserve prüfen</div>'
+        else:
+            bhf_alarm = ''
+
+        # --- Andere Pumpwerke im Netz (Live-Deko, nur Übersicht) ---
+        pw_ost_fuell = min(95, 30 + (rf - 1) * 25)
+        pw_tal_fuell = min(95, 40 + (rf - 1) * 20)
+        pw_ind_fuell = min(95, 20 + (rf - 1) * 30)
+
+        def _pw_farbe(pct):
+            if pct > 85: return "#e17055"
+            if pct > 65: return "#fdcb6e"
+            return "#00b894"
+
+        # === NETZÜBERSICHT SVG ===
+        netz_svg = f'''
+        <svg viewBox="0 0 900 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#0a1428;border-radius:6px">
+          <defs>
+            <marker id="ah-net" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+              <polygon points="0 0,9 3.5,0 7" fill="#74b9ff"/>
+            </marker>
+            <pattern id="grid-net" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#16213e" stroke-width="0.5"/>
+            </pattern>
+          </defs>
+          <rect width="900" height="340" fill="url(#grid-net)"/>
+
+          <!-- Titel -->
+          <text x="20" y="28" fill="#74b9ff" font-size="14" font-weight="bold" font-family="monospace">Einzugsgebiet Meckelberg – Pumpwerksnetz (Live)</text>
+          <text x="20" y="46" fill="#b2bec3" font-size="10" font-family="monospace">Regenfaktor aktuell: RF = {rf:.1f}</text>
+
+          <!-- Fluss (Vorfluter) -->
+          <path d="M 720,290 Q 760,280 790,300 Q 810,315 840,310" stroke="#3a6090" stroke-width="3" fill="none" opacity="0.6"/>
+          <text x="775" y="285" fill="#3a6090" font-size="9" font-family="monospace">Vorfluter</text>
+
+          <!-- KLÄRANLAGE (Zentrum rechts) -->
+          <rect x="700" y="140" width="170" height="90" rx="6" fill="#16213e" stroke="#74b9ff" stroke-width="2"/>
+          <text x="785" y="162" fill="#74b9ff" text-anchor="middle" font-size="12" font-weight="bold" font-family="monospace">KLÄRANLAGE</text>
+          <text x="785" y="178" fill="#dfe6e9" text-anchor="middle" font-size="10" font-family="monospace">Musterstadt</text>
+          <text x="785" y="198" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">50.000 EW</text>
+          <text x="785" y="214" fill="#74b9ff" text-anchor="middle" font-size="9" font-family="monospace">Q = {c["Q_zu"]:.0f} m³/d</text>
+
+          <!-- PW BAHNHOFSTRASSE -->
+          <rect x="40" y="75" width="180" height="100" rx="6" fill="#16213e" stroke="#0984e3" stroke-width="1.5"/>
+          <text x="130" y="96" fill="#74b9ff" text-anchor="middle" font-size="11" font-weight="bold" font-family="monospace">PW BAHNHOFSTRASSE</text>
+          <text x="130" y="112" fill="#b2bec3" text-anchor="middle" font-size="9" font-family="monospace">KKS: APW-01</text>
+          <!-- Füllstandsbalken -->
+          <rect x="55" y="122" width="150" height="14" fill="#2d3436" stroke="#0f3460" stroke-width="1"/>
+          <rect x="55" y="122" width="{1.5 * fuell_pct}" height="14" fill="{_pw_farbe(fuell_pct)}"/>
+          <text x="130" y="133" fill="#ffffff" text-anchor="middle" font-size="9" font-weight="bold" font-family="monospace">FÜLLSTAND {fuell_pct:.0f} %</text>
+          <text x="130" y="154" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">Q_zu = {Q_akt_Ls:.0f} L/s</text>
+          <text x="130" y="168" fill="{pw_status_farbe}" text-anchor="middle" font-size="9" font-family="monospace">{pw_status.split(" (")[0]}</text>
+
+          <!-- Druckleitung zur KA -->
+          <line x1="220" y1="125" x2="700" y2="175" stroke="#74b9ff" stroke-width="2" marker-end="url(#ah-net)" stroke-dasharray="4,3"/>
+          <text x="430" y="142" fill="#74b9ff" font-size="9" font-family="monospace">DN 300 Druckleitung</text>
+
+          <!-- PW OST -->
+          <rect x="40" y="195" width="150" height="70" rx="6" fill="#16213e" stroke="#0984e3" stroke-width="1.5"/>
+          <text x="115" y="214" fill="#74b9ff" text-anchor="middle" font-size="10" font-weight="bold" font-family="monospace">PW OST</text>
+          <text x="115" y="228" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">KKS: APW-02</text>
+          <rect x="50" y="236" width="130" height="10" fill="#2d3436" stroke="#0f3460" stroke-width="1"/>
+          <rect x="50" y="236" width="{1.3 * pw_ost_fuell}" height="10" fill="{_pw_farbe(pw_ost_fuell)}"/>
+          <text x="115" y="259" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">{pw_ost_fuell:.0f} %</text>
+          <line x1="190" y1="225" x2="700" y2="195" stroke="#3a6090" stroke-width="1.5" marker-end="url(#ah-net)" stroke-dasharray="4,3"/>
+
+          <!-- PW TALSTRASSE (Pumpstation mit 2 Pumpen → 2 Speicherbecken → Freigefälle zur KA) -->
+          <rect x="260" y="220" width="190" height="90" rx="6" fill="#16213e" stroke="#0984e3" stroke-width="1.5"/>
+          <text x="355" y="240" fill="#74b9ff" text-anchor="middle" font-size="10" font-weight="bold" font-family="monospace">PW TALSTRASSE</text>
+          <text x="355" y="253" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">KKS: APW-03 · 2 × KP DN 200</text>
+          <rect x="270" y="262" width="170" height="10" fill="#2d3436" stroke="#0f3460" stroke-width="1"/>
+          <rect x="270" y="262" width="{1.7 * pw_tal_fuell}" height="10" fill="{_pw_farbe(pw_tal_fuell)}"/>
+          <text x="355" y="285" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">Füllstand Pumpensumpf {pw_tal_fuell:.0f} %</text>
+          <text x="355" y="300" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">Druckleitung → B-002 / B-003 → Freigefälle</text>
+
+          <!-- Speicherbecken B-002 und B-003 als Zwischenstation -->
+          <ellipse cx="535" cy="235" rx="28" ry="11" fill="#1a2a4a" stroke="#74b9ff" stroke-width="1" stroke-dasharray="2,2"/>
+          <text x="535" y="238" fill="#b2bec3" text-anchor="middle" font-size="7.5" font-family="monospace">B-002</text>
+          <ellipse cx="535" cy="278" rx="28" ry="11" fill="#1a2a4a" stroke="#74b9ff" stroke-width="1" stroke-dasharray="2,2"/>
+          <text x="535" y="281" fill="#b2bec3" text-anchor="middle" font-size="7.5" font-family="monospace">B-003</text>
+          <text x="535" y="306" fill="#b2bec3" text-anchor="middle" font-size="7" font-family="monospace">Speicherbecken</text>
+
+          <!-- Druckleitung: PW Talstraße → Speicherbecken (gestrichelt, Druck) -->
+          <line x1="450" y1="245" x2="507" y2="235" stroke="#0984e3" stroke-width="1.5" stroke-dasharray="4,3"/>
+          <line x1="450" y1="265" x2="507" y2="278" stroke="#0984e3" stroke-width="1.5" stroke-dasharray="4,3"/>
+          <!-- Freigefälle: Speicherbecken → KA (durchgezogen) -->
+          <line x1="563" y1="235" x2="700" y2="195" stroke="#3a6090" stroke-width="1.5" marker-end="url(#ah-net)"/>
+          <line x1="563" y1="278" x2="700" y2="210" stroke="#3a6090" stroke-width="1.5" marker-end="url(#ah-net)"/>
+          <text x="630" y="247" fill="#3a6090" font-size="8" font-family="monospace">FG</text>
+
+          <!-- PW INDUSTRIEPARK -->
+          <rect x="460" y="75" width="180" height="70" rx="6" fill="#16213e" stroke="#0984e3" stroke-width="1.5"/>
+          <text x="550" y="94" fill="#74b9ff" text-anchor="middle" font-size="10" font-weight="bold" font-family="monospace">PW INDUSTRIEPARK</text>
+          <text x="550" y="108" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">KKS: APW-04</text>
+          <rect x="475" y="116" width="150" height="10" fill="#2d3436" stroke="#0f3460" stroke-width="1"/>
+          <rect x="475" y="116" width="{1.5 * pw_ind_fuell}" height="10" fill="{_pw_farbe(pw_ind_fuell)}"/>
+          <text x="550" y="139" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">{pw_ind_fuell:.0f} %</text>
+          <line x1="640" y1="110" x2="700" y2="165" stroke="#3a6090" stroke-width="1.5" marker-end="url(#ah-net)" stroke-dasharray="4,3"/>
+
+          <!-- Legende -->
+          <rect x="40" y="285" width="200" height="30" rx="3" fill="#16213e" stroke="#0f3460" stroke-width="1"/>
+          <text x="50" y="304" fill="#b2bec3" font-size="8" font-family="monospace">Füllstand: grün &lt; 65 %, gelb &lt; 85 %, rot &gt; 85 %</text>
+        </svg>
+        '''
+
+        # === PW-AUSWAHL ===
+        # (Aktuell ist nur Bahnhofstraße detailliert ausgebaut – andere PW zeigen Platzhalter)
+        # Dropdown mit mo.ui.dropdown wäre optimal, braucht aber eigene Zelle oben.
+
+        # === DETAIL BAHNHOFSTRASSE ===
+        bhf_live_html = f'''
+        <div class="pls-c">
+          <h3>📡 Live-Werte PW Bahnhofstraße (Außenstation APW-01)</h3>
+          {bhf_alarm}
+          <table class="pls-tbl">
+            <tr><td>Füllstand Sammelbecken</td><td class="c-v">{fuell_pct:.0f} % ({h_ist:.2f} m / {T_bhf:.1f} m)</td></tr>
+            <tr><td>Füllvolumen aktuell</td><td class="c-v">{V_ist:.0f} m³ / {V_bhf:.0f} m³</td></tr>
+            <tr><td>Zulauf (Druckrohr DN 300)</td><td class="c-v">{Q_akt_Ls:.1f} L/s</td></tr>
+            <tr><td>Fließgeschw. aktuell</td><td class="c-v">{v_akt:.2f} m/s</td></tr>
+            <tr><td>Pumpenstatus</td><td style="color:{pw_status_farbe};font-weight:bold;text-align:right">{pw_status}</td></tr>
+            <tr><td>Betriebsstunden P1</td><td class="c-v">{26480 + int(th * 0.4):,} h</td></tr>
+            <tr><td>Betriebsstunden P2</td><td class="c-v">{3120 + int(th * 0.05):,} h</td></tr>
+          </table>
+          <div class="pls-bar" style="margin-top:10px"><div class="pls-bar-f" style="width:{fuell_pct:.0f}%;background:{_pw_farbe(fuell_pct)}"></div></div>
+          <p style="font-size:0.78em;color:#b2bec3;margin:6px 0 0 0">
+            Fernwirk-Status: OK · letzter Telegrammempfang vor {1 + int(th * 0.01) % 5} s · Verbindung LWL
+          </p>
+        </div>
+        '''
+
+        # === BAUWERKSDATENBLATT ===
+        bhf_datenblatt_html = f'''
+        <div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div>
+              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT MECKELBERG – ABWASSERBETRIEB</div>
+              <div style="font-size:1.1em;font-weight:bold;color:#1a1a2e">BAUWERKSDATENBLATT</div>
+            </div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">
+              Blatt Nr.: APW-01/DB-02<br>
+              Stand: 03/2021<br>
+              Archiv: Ordner 47/B
+            </div>
+          </div>
+          <h3 style="color:#1a1a2e;border-color:#5a4820;margin:8px 0">Pumpwerk Bahnhofstraße – Sammelbecken</h3>
+          <table style="width:100%;border-collapse:collapse;font-size:0.88em;color:#1a1a2e">
+            <tr><td style="padding:4px 12px;color:#5a4820;width:45%">Anlagenkennzeichen (KKS)</td><td style="padding:4px 12px;font-weight:bold">APW-01</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Baujahr</td><td style="padding:4px 12px;font-weight:bold">1987</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Bauart</td><td style="padding:4px 12px;font-weight:bold">Stahlbeton, rechteckig, unterirdisch</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Becken – Länge (innen)</td><td style="padding:4px 12px;font-weight:bold">L = 8,00 m</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Becken – Breite (innen)</td><td style="padding:4px 12px;font-weight:bold">B = 5,00 m</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Becken – nutzbare Tiefe</td><td style="padding:4px 12px;font-weight:bold">T = 5,00 m</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Zulauf</td><td style="padding:4px 12px;font-weight:bold">Druckrohrleitung DN 300</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Fließgeschw. Trockenwetter</td><td style="padding:4px 12px;font-weight:bold">v_TW = 0,60 m/s</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Fließgeschw. Starkregen</td><td style="padding:4px 12px;font-weight:bold">v_SR = 1,80 m/s</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Förderpumpen</td><td style="padding:4px 12px;font-weight:bold">2 × Tauchmotor-KP (1 Betrieb, 1 Reserve)</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Einleitung nach</td><td style="padding:4px 12px;font-weight:bold">KA Musterstadt, Hauptzulauf</td></tr>
+          </table>
+          <p style="font-size:0.78em;color:#5a4820;margin:10px 0 0 0;font-style:italic;border-top:1px dashed #5a4820;padding-top:6px">
+            Anmerkung: Unterlagen aus dem Bauarchiv. Geometrieangaben aus
+            Bestandsplan 1987 (vor Sanierung Dacheindeckung 2003). Spätere
+            Umbauten am Sammelbecken selbst nicht dokumentiert.
+          </p>
+        </div>
+        '''
+
+        # === HANDSKIZZE (als SVG, absichtlich "grob") ===
+        # Leicht verzogene Linien + handschriftliche Anmutung (Times als Schreibschrift-Ersatz)
+        bhf_skizze_svg = '''
+        <div class="pls-c" style="background:#f7f3e8;color:#2c1810;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div style="font-size:0.85em;color:#5a4820;font-weight:bold">📐 Grobe Skizze aus Bauarchiv (Bestand)</div>
+            <div style="font-size:0.7em;color:#5a4820;border:1.5px dashed #8a5020;padding:2px 8px;transform:rotate(-3deg);display:inline-block">ARCHIV · 1987</div>
+          </div>
+          <svg viewBox="0 0 600 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#f7f3e8;border:1px solid #c8b080;border-radius:4px">
+            <!-- Karopapier-Raster -->
+            <defs>
+              <pattern id="karo" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#d4c090" stroke-width="0.4"/>
+              </pattern>
+            </defs>
+            <rect width="600" height="340" fill="url(#karo)"/>
+
+            <!-- TITEL (handschriftlich) -->
+            <text x="20" y="30" fill="#2c1810" font-size="15" font-family="Georgia, serif" font-style="italic" font-weight="bold">Sammelbecken Bahnhofstr. - Seitenansicht</text>
+
+            <!-- Becken-Seitenansicht (leicht wackelige Linien durch kleine Offsets) -->
+            <!-- Oberkante -->
+            <path d="M 60,80 L 360,82 L 361,79 L 359,81" stroke="#2c1810" stroke-width="2" fill="none" stroke-linecap="round"/>
+            <!-- Unterkante -->
+            <path d="M 58,230 L 362,231 L 361,228" stroke="#2c1810" stroke-width="2" fill="none" stroke-linecap="round"/>
+            <!-- linke Wand -->
+            <path d="M 60,80 L 59,230 L 61,229" stroke="#2c1810" stroke-width="2" fill="none" stroke-linecap="round"/>
+            <!-- rechte Wand -->
+            <path d="M 360,82 L 361,231 L 359,230" stroke="#2c1810" stroke-width="2" fill="none" stroke-linecap="round"/>
+
+            <!-- Wasserlinie (Wellen) -->
+            <path d="M 65,150 Q 85,145 105,150 T 145,150 T 185,150 T 225,150 T 265,150 T 305,150 T 345,150 T 358,150" stroke="#3a6090" stroke-width="1.3" fill="none" opacity="0.6"/>
+            <!-- Wasser-Schraffur -->
+            <g stroke="#3a6090" stroke-width="0.5" opacity="0.35">
+              <line x1="70" y1="165" x2="80" y2="155"/>
+              <line x1="100" y1="175" x2="110" y2="165"/>
+              <line x1="140" y1="170" x2="150" y2="160"/>
+              <line x1="180" y1="180" x2="190" y2="170"/>
+              <line x1="220" y1="165" x2="230" y2="155"/>
+              <line x1="260" y1="180" x2="270" y2="170"/>
+              <line x1="300" y1="170" x2="310" y2="160"/>
+              <line x1="340" y1="175" x2="350" y2="165"/>
+              <line x1="90" y1="195" x2="100" y2="185"/>
+              <line x1="170" y1="200" x2="180" y2="190"/>
+              <line x1="250" y1="205" x2="260" y2="195"/>
+              <line x1="330" y1="200" x2="340" y2="190"/>
+            </g>
+
+            <!-- Zulauf-Rohr (Druckrohr DN 300), von links oben -->
+            <path d="M 10,100 L 60,100" stroke="#2c1810" stroke-width="2.5" fill="none"/>
+            <path d="M 10,120 L 60,120" stroke="#2c1810" stroke-width="2.5" fill="none"/>
+            <text x="15" y="95" fill="#2c1810" font-size="11" font-family="Georgia, serif" font-style="italic">DN 300</text>
+            <!-- Pfeil Richtung Zulauf -->
+            <path d="M 25,110 L 45,110" stroke="#a03040" stroke-width="1.5" fill="none" marker-end="url(#sk-arrow)"/>
+            <defs>
+              <marker id="sk-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <polygon points="0 0,8 3,0 6" fill="#a03040"/>
+              </marker>
+            </defs>
+            <text x="20" y="138" fill="#a03040" font-size="10" font-family="Georgia, serif" font-style="italic">Zulauf</text>
+
+            <!-- Pumpensumpf am Boden rechts + Pumpe -->
+            <path d="M 300,230 L 300,260 L 360,260 L 360,230" stroke="#2c1810" stroke-width="1.5" fill="none"/>
+            <circle cx="330" cy="280" r="12" fill="none" stroke="#2c1810" stroke-width="2"/>
+            <text x="330" y="285" fill="#2c1810" font-size="13" font-family="Georgia, serif" text-anchor="middle" font-weight="bold">P</text>
+            <text x="370" y="283" fill="#2c1810" font-size="10" font-family="Georgia, serif" font-style="italic">Pumpe</text>
+            <!-- Förderleitung nach oben rechts raus -->
+            <path d="M 330,268 L 330,240 L 410,240 L 410,60 L 450,60" stroke="#2c1810" stroke-width="1.8" fill="none"/>
+            <text x="420" y="52" fill="#2c1810" font-size="10" font-family="Georgia, serif" font-style="italic">zur KA</text>
+
+            <!-- Maßlinien -->
+            <!-- Länge L (unten) -->
+            <line x1="60" y1="255" x2="360" y2="255" stroke="#5a4820" stroke-width="0.8"/>
+            <line x1="60" y1="250" x2="60" y2="260" stroke="#5a4820" stroke-width="0.8"/>
+            <line x1="360" y1="250" x2="360" y2="260" stroke="#5a4820" stroke-width="0.8"/>
+            <text x="210" y="275" fill="#5a4820" font-size="13" font-family="Georgia, serif" font-style="italic" text-anchor="middle">L ≈ 8,00 m</text>
+            <!-- Tiefe T (rechts) -->
+            <line x1="385" y1="80" x2="385" y2="230" stroke="#5a4820" stroke-width="0.8"/>
+            <line x1="380" y1="80" x2="390" y2="80" stroke="#5a4820" stroke-width="0.8"/>
+            <line x1="380" y1="230" x2="390" y2="230" stroke="#5a4820" stroke-width="0.8"/>
+            <text x="400" y="160" fill="#5a4820" font-size="13" font-family="Georgia, serif" font-style="italic">T ≈ 5,00 m</text>
+
+            <!-- Draufsicht (klein, rechts unten) -->
+            <text x="470" y="95" fill="#2c1810" font-size="11" font-family="Georgia, serif" font-style="italic">Draufsicht:</text>
+            <path d="M 475,105 L 575,106 L 576,166 L 474,165 L 475,105" stroke="#2c1810" stroke-width="1.5" fill="none"/>
+            <line x1="480" y1="170" x2="570" y2="170" stroke="#5a4820" stroke-width="0.6"/>
+            <text x="525" y="183" fill="#5a4820" font-size="10" font-family="Georgia, serif" font-style="italic" text-anchor="middle">L ≈ 8,00 m</text>
+            <line x1="585" y1="110" x2="585" y2="160" stroke="#5a4820" stroke-width="0.6"/>
+            <text x="595" y="140" fill="#5a4820" font-size="10" font-family="Georgia, serif" font-style="italic">B ≈ 5 m</text>
+
+            <!-- Notiz unten -->
+            <text x="20" y="315" fill="#8a5020" font-size="10" font-family="Georgia, serif" font-style="italic">Handskizze H. Breitenbach, Stadt Meckelberg, 14.09.1987 – n. maßstäblich!</text>
+
+            <!-- Kaffeefleck zur Deko :-) -->
+            <circle cx="540" cy="260" r="22" fill="#8a5020" opacity="0.12"/>
+            <circle cx="540" cy="260" r="16" fill="#8a5020" opacity="0.15"/>
+          </svg>
+        </div>
+        '''
+
+        aussenanlagen = mo.vstack([
+            # Netzübersicht oben
+            mo.Html(f'''<div class="pls"><div class="pls-c">
+                <h3>🗺️ Netzübersicht – Pumpwerke im Einzugsgebiet Meckelberg</h3>
+                <p style="font-size:0.85em;color:#b2bec3;margin:0 0 8px 0">
+                    Die Außenstationen werden per Fernwirktechnik (Funk / LWL) an das zentrale PLS
+                    der Kläranlage angebunden. Jedes Pumpwerk verfügt über ein Sammelbecken und
+                    Förderpumpen. Bei Regenfaktor RF &gt; 1,5 steigen Zuflüsse und Füllstände deutlich.
+                </p>
+                {netz_svg}
+            </div></div>'''),
+
+            # Detailansicht PW Bahnhofstraße: Live-Werte + Bauwerksdatenblatt
+            mo.Html(f'''<div class="pls"><div class="pls-g2">
+                <div>{bhf_live_html}</div>
+                <div>{bhf_datenblatt_html}</div>
+            </div></div>'''),
+
+            # Handskizze aus Bauarchiv
+            mo.Html(f'<div class="pls">{bhf_skizze_svg}</div>'),
+
+            # Hinweis zu den anderen Pumpwerken (neutral, ohne didaktischen Bezug)
+            mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#0984e3">
+                <h3 style="color:#74b9ff">ℹ️ Weitere Pumpwerke (PW Ost, PW Talstraße, PW Industriepark)</h3>
+                <p style="font-size:0.85em;color:#b2bec3;margin:0">
+                    Für diese Außenstationen liegen aktuell nur die Live-Füllstände auf der Netzübersicht
+                    vor. Ausführliche Bauwerksdatenblätter können auf Anforderung aus dem Bauarchiv
+                    bereitgestellt werden.
+                </p>
+            </div></div>'''),
+        ])
+
+        # ====== ARMATUREN TAB ======
+        # Zentraler Armaturen-Katalog der Gesamtanlage.
+        # Jede Armatur hat Stammdaten (Typenschild), Betriebsdaten und einen Zustand.
+        # SuS können eine Armatur auswählen und einen Wartungsauftrag an die Leitwarte senden.
+        _th = th  # Simulationsstunden für Betriebsstunden-Fortschreibung
+
+        ARMATUREN = {
+            # --- HEBEWERK / MECHANISCHE REINIGUNG ---
+            "HS-101": dict(
+                kks="HS-101", kurz="Plattenschieber", einbau="Zulauf zum Pumpensumpf / Hebewerk",
+                anlagenteil="Mech. Reinigung", hersteller="KSB", modell="HERA-BD",
+                dn=300, pn=10, werkstoff="5.3106 / EPDM", baujahr=2020, serien="123456",
+                medium="Abwasser", t_max=60, p_max=5, antrieb="Handrad",
+                stellung="AUF", bh=32850, wartung="06/2023",
+                zustand="defekt",
+                meldung="Mechanischer Schaden – Bügel verformt, Handrad schwergängig. Seit 14:22 Uhr nicht mehr bedienbar.",
+            ),
+            "SV-201": dict(
+                kks="SV-201", kurz="Regelklappe (motorisch)", einbau="Regenüberlauf / Mischwasserabschlag",
+                anlagenteil="Mech. Reinigung", hersteller="Adams Armaturen", modell="REV MC",
+                dn=400, pn=10, werkstoff="EN-GJS-400 / NBR", baujahr=2015, serien="A-47821",
+                medium="Mischwasser", t_max=50, p_max=2, antrieb="E-Stellantrieb 24 V",
+                stellung="ZU (Abschlag inaktiv)" if c.get("Q_abschlag", 0) < 10 else "TEILHUB",
+                bh=59120, wartung="09/2024", zustand="ok", meldung="",
+            ),
+            "HS-202": dict(
+                kks="HS-202", kurz="Plattenschieber", einbau="Zulauf Vorklärung VK1",
+                anlagenteil="Mech. Reinigung", hersteller="KSB", modell="HERA-BD",
+                dn=400, pn=10, werkstoff="5.3106 / EPDM", baujahr=2015, serien="098112",
+                medium="Rohabwasser", t_max=60, p_max=5, antrieb="E-Stellantrieb / Handrad",
+                stellung="AUF", bh=73410, wartung="04/2024", zustand="ok", meldung="",
+            ),
+            "RK-301": dict(
+                kks="RK-301", kurz="Rückschlagklappe", einbau="Druckstutzen Zulaufpumpe P1.1",
+                anlagenteil="Mech. Reinigung", hersteller="ERHARD", modell="ROCO wave",
+                dn=300, pn=10, werkstoff="EN-GJS-500 / EPDM", baujahr=2015, serien="E-552103",
+                medium="Abwasser", t_max=60, p_max=10, antrieb="selbsttätig",
+                stellung="betriebsbedingt", bh=66300, wartung="04/2024", zustand="ok", meldung="",
+            ),
+
+            # --- BIOLOGISCHE STUFE ---
+            "V-401": dict(
+                kks="V-401", kurz="Absperrschieber", einbau="Interne Rezirkulation (Nitri → Deni)",
+                anlagenteil="Biologische Stufe", hersteller="AVK", modell="Serie 06",
+                dn=300, pn=10, werkstoff="EN-GJS-500 / EPDM", baujahr=2018, serien="AVK-331820",
+                medium="Belebtschlamm", t_max=50, p_max=5, antrieb="Handrad",
+                stellung="AUF", bh=48500, wartung="11/2024", zustand="ok", meldung="",
+            ),
+            "V-402": dict(
+                kks="V-402", kurz="Absperrschieber", einbau="Rücklaufschlammleitung RS",
+                anlagenteil="Biologische Stufe", hersteller="AVK", modell="Serie 06",
+                dn=250, pn=10, werkstoff="EN-GJS-500 / EPDM", baujahr=2018, serien="AVK-331821",
+                medium="Rücklaufschlamm", t_max=50, p_max=5, antrieb="Handrad",
+                stellung="AUF", bh=48500, wartung="11/2024", zustand="ok", meldung="",
+            ),
+
+            # --- SCHLAMMBEHANDLUNG ---
+            "V-501": dict(
+                kks="V-501", kurz="Absperrschieber", einbau="ÜS-Leitung Richtung Eindicker",
+                anlagenteil="Schlammbehandlung", hersteller="AVK", modell="Serie 02",
+                dn=100, pn=10, werkstoff="EN-GJS-500 / EPDM", baujahr=2018, serien="AVK-110475",
+                medium="Überschussschlamm", t_max=50, p_max=6, antrieb="Handrad",
+                stellung="AUF", bh=38400, wartung="02/2025", zustand="ok", meldung="",
+            ),
+            "V-601": dict(
+                kks="V-601", kurz="Absperrschieber", einbau="Primärschlamm-Leitung VK",
+                anlagenteil="Schlammbehandlung", hersteller="AVK", modell="Serie 02",
+                dn=150, pn=10, werkstoff="EN-GJS-500 / EPDM", baujahr=2018, serien="AVK-115502",
+                medium="Primärschlamm", t_max=50, p_max=6, antrieb="Handrad",
+                stellung="AUF", bh=38400, wartung="02/2025", zustand="ok", meldung="",
+            ),
+
+            # --- DRUCKROHRLEITUNG PW TALSTRASSE ---
+            # (Korrosionsbefund, Sanierung geplant – alle Armaturen werden im Rahmen
+            #  der Rohrleitungserneuerung mit getauscht. R&I-Schema siehe Anhang.)
+            "V-001": dict(
+                kks="V-001", kurz="Absperrschieber", einbau="Druckstutzen Pumpe P-001 (PW Talstraße)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="VAG", modell="EKO plus",
+                dn=200, pn=10, werkstoff="EN-GJL-250 / EPDM", baujahr=1998, serien="VAG-22041",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="Handrad",
+                stellung="AUF", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Korrosionsbefund am Gehäuse – Sanierung im Zuge Rohrleitungserneuerung geplant.",
+            ),
+            "V-002": dict(
+                kks="V-002", kurz="Absperrschieber", einbau="Druckstutzen Pumpe P-002 (PW Talstraße)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="VAG", modell="EKO plus",
+                dn=200, pn=10, werkstoff="EN-GJL-250 / EPDM", baujahr=1998, serien="VAG-22042",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="Handrad",
+                stellung="AUF", bh=42100, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Korrosionsbefund am Gehäuse – Sanierung im Zuge Rohrleitungserneuerung geplant.",
+            ),
+            "RK-001": dict(
+                kks="RK-001", kurz="Rückschlagklappe", einbau="nach P-001, vor Sammler (PW Talstraße)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="ERHARD", modell="ROCO check",
+                dn=200, pn=10, werkstoff="EN-GJL-250 / NBR", baujahr=1998, serien="E-441207",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="selbsttätig",
+                stellung="betriebsbedingt", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Klappe weist Verschleißspuren auf – Austausch im Zuge Rohrleitungserneuerung.",
+            ),
+            "RK-002": dict(
+                kks="RK-002", kurz="Rückschlagklappe", einbau="nach P-002, vor Sammler (PW Talstraße)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="ERHARD", modell="ROCO check",
+                dn=200, pn=10, werkstoff="EN-GJL-250 / NBR", baujahr=1998, serien="E-441208",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="selbsttätig",
+                stellung="betriebsbedingt", bh=42100, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Klappe weist Verschleißspuren auf – Austausch im Zuge Rohrleitungserneuerung.",
+            ),
+            "V-003": dict(
+                kks="V-003", kurz="Absperrschieber", einbau="Abzweig zu Speicherbecken 1 (B-002)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="VAG", modell="EKO plus",
+                dn=125, pn=10, werkstoff="EN-GJL-250 / EPDM", baujahr=1998, serien="VAG-18812",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="Handrad",
+                stellung="AUF", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Korrosion am Flansch, Undichtigkeit dokumentiert. Austausch im Sanierungspaket.",
+            ),
+            "V-004": dict(
+                kks="V-004", kurz="Absperrschieber", einbau="Abzweig zu Speicherbecken 2 (B-003)",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="VAG", modell="EKO plus",
+                dn=125, pn=10, werkstoff="EN-GJL-250 / EPDM", baujahr=1998, serien="VAG-18813",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="Handrad",
+                stellung="AUF", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Korrosion am Flansch, Undichtigkeit dokumentiert. Austausch im Sanierungspaket.",
+            ),
+            "LA-001": dict(
+                kks="LA-001", kurz="Be-/Entlüftungsventil", einbau="Hauptleitung DN 200, Hochpunkt 1",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="ARI Armaturen", modell="DP 17",
+                dn=80, pn=10, werkstoff="EN-GJL-250 / NBR", baujahr=1998, serien="ARI-83491",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="selbsttätig",
+                stellung="betriebsbedingt", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Gehäuse mit Korrosionsspuren – Austausch im Zuge Rohrleitungserneuerung.",
+            ),
+            "LA-002": dict(
+                kks="LA-002", kurz="Be-/Entlüftungsventil", einbau="Zweigleitung DN 125, Hochpunkt 2",
+                anlagenteil="Druckrohrleitung PW Talstraße", hersteller="ARI Armaturen", modell="DP 17",
+                dn=50, pn=10, werkstoff="EN-GJL-250 / NBR", baujahr=1998, serien="ARI-83492",
+                medium="Abwasser", t_max=45, p_max=7, antrieb="selbsttätig",
+                stellung="betriebsbedingt", bh=198200, wartung="05/2022",
+                zustand="sanierung",
+                meldung="Gehäuse mit Korrosionsspuren – Austausch im Zuge Rohrleitungserneuerung.",
+            ),
+        }
+
+        # Betriebsstunden leicht dynamisch fortschreiben (Simulationszeit)
+        for _k, _a in ARMATUREN.items():
+            if _a.get("zustand") != "defekt":
+                _a["bh"] = int(_a["bh"] + _th * 0.9)
+
+        # Statuszählung
+        _n_ok = sum(1 for a in ARMATUREN.values() if a["zustand"] == "ok")
+        _n_san = sum(1 for a in ARMATUREN.values() if a["zustand"] == "sanierung")
+        _n_def = sum(1 for a in ARMATUREN.values() if a["zustand"] == "defekt")
+        _n_ges = len(ARMATUREN)
+
+        # Farb-/Icon-Zuordnung nach Zustand
+        def _z_farbe(z):
+            return {"ok": "#00b894", "wartung": "#fdcb6e",
+                    "sanierung": "#e17055", "defekt": "#e94560"}.get(z, "#74b9ff")
+
+        def _z_icon(z):
+            return {"ok": "🟢", "wartung": "🟡",
+                    "sanierung": "🟠", "defekt": "🔴"}.get(z, "⚪")
+
+        def _z_text(z):
+            return {"ok": "in Betrieb", "wartung": "Wartung fällig",
+                    "sanierung": "Sanierung empfohlen", "defekt": "STÖRUNG"}.get(z, z)
+
+        # --- Armaturenliste: gruppiert nach Anlagenteil ---
+        gruppen = {}
+        for kks, a in ARMATUREN.items():
+            gruppen.setdefault(a["anlagenteil"], []).append((kks, a))
+
+        armaturen_liste_html = ""
+        for gr, items in gruppen.items():
+            rows = ""
+            for kks, a in items:
+                zf = _z_farbe(a["zustand"])
+                rows += f'''
+                <tr style="border-bottom:1px solid #0f3460">
+                    <td style="padding:6px 12px;font-family:monospace;color:#74b9ff;font-weight:bold">{kks}</td>
+                    <td style="padding:6px 12px">{a["kurz"]}</td>
+                    <td style="padding:6px 12px;color:#b2bec3;font-size:0.9em">{a["einbau"]}</td>
+                    <td style="padding:6px 12px;text-align:center">DN {a["dn"]}</td>
+                    <td style="padding:6px 12px;text-align:center;color:#b2bec3">{a["stellung"]}</td>
+                    <td style="padding:6px 12px;text-align:center;color:#b2bec3">{a["bh"]:,} h</td>
+                    <td style="padding:6px 12px;color:{zf};font-weight:bold;white-space:nowrap">{_z_icon(a["zustand"])} {_z_text(a["zustand"])}</td>
+                </tr>'''
+            armaturen_liste_html += f'''
+            <div class="pls-c" style="padding:8px 10px">
+                <h3 style="font-size:0.95em">{gr}</h3>
+                <table style="width:100%;border-collapse:collapse;font-size:0.86em;color:#ffffff;background:#16213e">
+                    <tr style="background:#0f1a30;border-bottom:2px solid #0f3460">
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:left">KKS</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:left">Typ</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:left">Einbauort</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:center">Nennweite</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:center">Stellung</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:center">Betriebsstd.</th>
+                        <th style="padding:6px 12px;color:#74b9ff;text-align:center">Status</th>
+                    </tr>
+                    {rows}
+                </table>
+            </div>'''
+
+        # --- Detailansicht für gezielt geöffnete Armatur (Details über <details>/<summary>) ---
+        # Hier rendern wir jede Armatur als aufklappbare Karte mit Typenschild.
+        def _typenschild_svg(a):
+            """Erzeugt ein KSB-ähnliches Typenschild als SVG, Daten variabel."""
+            marke = a["hersteller"]
+            # Farbschema dezent nach Hersteller
+            mfarbe = {
+                "KSB": "#1a4a90", "VAG": "#2a6030", "ERHARD": "#603020",
+                "AVK": "#8a4818", "ARI Armaturen": "#50208a",
+                "Adams Armaturen": "#1a5a80",
+            }.get(marke, "#1a4080")
+            return f'''
+<svg viewBox="0 0 480 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:480px;height:auto">
+  <!-- Blechplatte -->
+  <defs>
+    <linearGradient id="mtl-{a["kks"]}" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#e8e8ec"/>
+      <stop offset="50%" style="stop-color:#c8c8cc"/>
+      <stop offset="100%" style="stop-color:#a8a8ac"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="472" height="272" rx="6" fill="url(#mtl-{a["kks"]})" stroke="#707080" stroke-width="1"/>
+  <!-- Blaue Kopfzeile -->
+  <rect x="4" y="4" width="472" height="46" rx="6" fill="{mfarbe}"/>
+  <text x="240" y="34" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="22" font-weight="bold" letter-spacing="2">{a["kurz"].upper()}</text>
+
+  <!-- Typ + Hersteller-Logo-Bereich -->
+  <text x="30" y="80" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="14" font-weight="bold">Typ:</text>
+  <text x="75" y="80" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="15" font-weight="bold">{a["modell"]}</text>
+  <line x1="75" y1="84" x2="280" y2="84" stroke="#303040" stroke-width="0.6"/>
+  <!-- Hersteller-„Logo" -->
+  <rect x="340" y="60" width="115" height="32" rx="3" fill="#ffffff" stroke="{mfarbe}" stroke-width="1.5"/>
+  <text x="397" y="82" text-anchor="middle" fill="{mfarbe}" font-family="Arial,sans-serif" font-size="15" font-weight="bold">{marke}</text>
+  <line x1="20" y1="100" x2="460" y2="100" stroke="{mfarbe}" stroke-width="1.2"/>
+
+  <!-- Linke Spalte -->
+  <text x="30" y="125" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Einbauort:</text>
+  <text x="100" y="125" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">{a["einbau"][:38]}</text>
+  <line x1="100" y1="128" x2="240" y2="128" stroke="#303040" stroke-width="0.4"/>
+
+  <text x="30" y="152" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Nennweite:</text>
+  <text x="105" y="152" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">DN {a["dn"]}</text>
+  <line x1="105" y1="155" x2="240" y2="155" stroke="#303040" stroke-width="0.4"/>
+
+  <text x="30" y="175" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Druckstufe:</text>
+  <text x="105" y="175" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">PN {a["pn"]}</text>
+  <line x1="105" y1="178" x2="240" y2="178" stroke="#303040" stroke-width="0.4"/>
+
+  <!-- Rechte Spalte -->
+  <text x="260" y="125" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Werkstoff:</text>
+  <text x="327" y="125" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">{a["werkstoff"]}</text>
+  <line x1="327" y1="128" x2="460" y2="128" stroke="#303040" stroke-width="0.4"/>
+
+  <text x="260" y="152" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Baujahr:</text>
+  <text x="318" y="152" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">{a["baujahr"]}</text>
+  <line x1="318" y1="155" x2="460" y2="155" stroke="#303040" stroke-width="0.4"/>
+
+  <text x="260" y="175" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Serien-Nr.:</text>
+  <text x="327" y="175" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">{a["serien"]}</text>
+  <line x1="327" y1="178" x2="460" y2="178" stroke="#303040" stroke-width="0.4"/>
+
+  <!-- Untere Zeile -->
+  <line x1="20" y1="200" x2="460" y2="200" stroke="{mfarbe}" stroke-width="1.2"/>
+  <text x="30" y="223" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">Medium: {a["medium"]}</text>
+  <line x1="163" y1="210" x2="163" y2="235" stroke="#606060" stroke-width="0.4"/>
+  <text x="175" y="223" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">max. Temp.: {a["t_max"]} °C</text>
+  <line x1="310" y1="210" x2="310" y2="235" stroke="#606060" stroke-width="0.4"/>
+  <text x="322" y="223" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11" font-weight="bold">max. Druck: {a["p_max"]} bar</text>
+
+  <!-- Fußzeile -->
+  <rect x="4" y="245" width="472" height="31" fill="{mfarbe}" rx="0"/>
+  <text x="240" y="266" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="12" font-weight="bold" letter-spacing="1">Made in Germany</text>
+
+  <!-- Bohrungen (Ecken) -->
+  <circle cx="24" cy="24" r="4.5" fill="#707080" stroke="#303040" stroke-width="0.6"/>
+  <circle cx="456" cy="24" r="4.5" fill="#707080" stroke="#303040" stroke-width="0.6"/>
+  <circle cx="24" cy="256" r="4.5" fill="#707080" stroke="#303040" stroke-width="0.6"/>
+  <circle cx="456" cy="256" r="4.5" fill="#707080" stroke="#303040" stroke-width="0.6"/>
+</svg>'''
+
+        # --- Aufklappbare Armatur-Karten nur für Armaturen, die nicht "ok" sind ---
+        # (Alle OK-Armaturen erscheinen in der Übersicht, für Details sind die
+        # auffälligen Armaturen primär relevant. OK-Armaturen kann man über den
+        # Dropdown unten ebenfalls einsehen → Wartung proaktiv anmelden.)
+        auffaellig_html = ""
+        for kks, a in ARMATUREN.items():
+            if a["zustand"] == "ok":
+                continue
+            zf = _z_farbe(a["zustand"])
+            meldung_html = ""
+            if a.get("meldung"):
+                meldung_html = f'''
+                <div style="background:rgba({("233,69,96" if a["zustand"]=="defekt" else "225,112,85")},0.12);
+                            border-left:3px solid {zf};padding:6px 10px;margin:6px 0 10px;font-size:0.85em">
+                    <strong style="color:{zf}">{"⚡ Störmeldung" if a["zustand"]=="defekt" else "ℹ️ Anlagenbefund"}:</strong>
+                    <span style="color:#dfe6e9"> {a["meldung"]}</span>
+                </div>'''
+            auffaellig_html += f'''
+<details style="margin:6px 0;background:#16213e;border:1px solid {zf};border-radius:6px;padding:8px 14px">
+  <summary style="cursor:pointer;font-weight:bold;color:{zf};font-family:monospace;font-size:0.95em">
+    {_z_icon(a["zustand"])} {kks} – {a["kurz"]} · {a["einbau"]} <span style="color:#b2bec3;font-weight:normal">&nbsp;▸&nbsp;Details anzeigen</span>
+  </summary>
+  <div style="margin-top:10px">
+    {meldung_html}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start">
+      <div>
+        <h4 style="color:#74b9ff;margin:0 0 6px;font-size:0.85em;border-bottom:1px solid #0f3460;padding-bottom:3px">📋 Typenschild (Original)</h4>
+        {_typenschild_svg(a)}
+      </div>
+      <div>
+        <h4 style="color:#74b9ff;margin:0 0 6px;font-size:0.85em;border-bottom:1px solid #0f3460;padding-bottom:3px">📊 Betriebsdaten</h4>
+        <table class="pls-tbl" style="font-size:0.85em">
+          <tr><td>Anlagenteil</td><td class="c-v">{a["anlagenteil"]}</td></tr>
+          <tr><td>Antriebsart</td><td class="c-v">{a["antrieb"]}</td></tr>
+          <tr><td>Aktuelle Stellung</td><td class="c-v">{a["stellung"]}</td></tr>
+          <tr><td>Betriebsstunden</td><td class="c-v">{a["bh"]:,} h</td></tr>
+          <tr><td>Letzte Wartung</td><td class="c-v">{a["wartung"]}</td></tr>
+          <tr><td>Zustand</td><td style="color:{zf};font-weight:bold;text-align:right">{_z_text(a["zustand"])}</td></tr>
+        </table>
+        <div style="margin-top:10px;padding:8px 10px;background:#0f1a30;border-radius:4px;font-size:0.8em;color:#b2bec3">
+          💡 Für eine Wartung oder Instandsetzung dieser Armatur bitte den Auswahldialog unten verwenden.
+        </div>
+      </div>
+    </div>
+  </div>
+</details>'''
+
+        # --- Wartungsauftrag (bei Button-Klick) ---
+        wartung_html = ""
+        if wartung_btn.value and armatur_auswahl.value and armatur_auswahl.value != "—":
+            _sel_kks = armatur_auswahl.value.split()[0]
+            _sel = ARMATUREN.get(_sel_kks)
+            if _sel:
+                _auftrag_nr = f"WA-{2025000 + (_sel_kks.__hash__() % 1000):06d}"
+                _datum = _dt.datetime.now().strftime("%d.%m.%Y %H:%M")
+                wartung_html = f'''
+<div style="background:#fffdf5;color:#1a1a2e;border:2px solid #5a4820;border-radius:6px;padding:16px 20px;margin-top:10px;font-family:'Consolas','Courier New',monospace">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:8px;margin-bottom:10px">
+    <div>
+      <div style="font-size:0.75em;color:#5a4820;letter-spacing:1.5px">KLÄRANLAGE MUSTERSTADT – BETRIEBSFÜHRUNG</div>
+      <div style="font-size:1.1em;font-weight:bold">WARTUNGSAUFTRAG / INSTANDSETZUNG</div>
+    </div>
+    <div style="text-align:right;font-size:0.8em;color:#5a4820">
+      <div><strong style="color:#1a1a2e">Auftrag-Nr.: {_auftrag_nr}</strong></div>
+      <div>Ausgestellt: {_datum}</div>
+      <div>Priorität: {"HOCH (Störung)" if _sel["zustand"]=="defekt" else "MITTEL"}</div>
+    </div>
+  </div>
+  <table style="width:100%;font-size:0.88em;border-collapse:collapse">
+    <tr><td style="padding:3px 8px;color:#5a4820;width:35%">Armatur (KKS)</td>    <td style="padding:3px 8px;font-weight:bold">{_sel["kks"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Typ / Modell</td>               <td style="padding:3px 8px;font-weight:bold">{_sel["kurz"]} · {_sel["hersteller"]} {_sel["modell"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Einbauort</td>                   <td style="padding:3px 8px;font-weight:bold">{_sel["einbau"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Nennweite / Druckstufe</td>     <td style="padding:3px 8px;font-weight:bold">DN {_sel["dn"]} / PN {_sel["pn"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Werkstoff</td>                   <td style="padding:3px 8px;font-weight:bold">{_sel["werkstoff"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Serien-Nr. / Baujahr</td>       <td style="padding:3px 8px;font-weight:bold">{_sel["serien"]} · {_sel["baujahr"]}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820">Aktueller Zustand</td>          <td style="padding:3px 8px;font-weight:bold;color:{_z_farbe(_sel["zustand"])}">{_z_text(_sel["zustand"])}</td></tr>
+    <tr><td style="padding:3px 8px;color:#5a4820;vertical-align:top">Anlass / Befund</td><td style="padding:3px 8px">{_sel.get("meldung") or "Routine-Wartung, planmäßig"}</td></tr>
+  </table>
+  <div style="margin-top:12px;padding-top:8px;border-top:1px dashed #5a4820">
+    <table style="width:100%;font-size:0.85em">
+      <tr>
+        <td style="padding:3px 8px;color:#5a4820;width:35%">Meldende Stelle</td>
+        <td style="padding:3px 8px">Anlagenfahrer (Auszubildende/-r)</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 8px;color:#5a4820">Empfänger</td>
+        <td style="padding:3px 8px">Leitwarte / Instandhaltung</td>
+      </tr>
+      <tr>
+        <td style="padding:3px 8px;color:#5a4820">Erforderliche Unterlagen</td>
+        <td style="padding:3px 8px">Betriebsanleitung, Explosionszeichnung, Stückliste</td>
+      </tr>
+    </table>
+  </div>
+  <div style="margin-top:10px;padding:8px 10px;background:#f4f0e0;border-left:3px solid #5a4820;font-size:0.82em">
+    <strong>📩 Auftrag an Leitwarte übermittelt.</strong> Die Leitwarte bestätigt den Eingang und
+    terminiert die Maßnahme mit der Instandhaltung. Bei Störungsmeldungen (Priorität HOCH) erfolgt
+    die Kontaktaufnahme binnen 30 Minuten.
+  </div>
+</div>'''
+
+        # --- Tab zusammensetzen ---
+        armaturen = mo.vstack([
+            # Kopfzeile mit Status-Übersicht
+            mo.Html(f'''<div class="pls"><div class="pls-c">
+                <h3>🛠️ Armaturenverzeichnis</h3>
+                <p style="font-size:0.88em;margin:4px 0 10px">
+                    Zentrale Übersicht aller Armaturen der Kläranlage und der zugehörigen Außenstationen.
+                    Zustand, Stellung und Betriebsstunden werden live aus dem PLS übernommen.
+                </p>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+                    <div style="background:#0f1a30;border-radius:4px;padding:10px;border-left:3px solid #74b9ff">
+                        <div style="font-size:0.75em;color:#b2bec3">Gesamt</div>
+                        <div style="font-size:1.4em;font-weight:bold;color:#74b9ff">{_n_ges}</div>
+                    </div>
+                    <div style="background:#0f1a30;border-radius:4px;padding:10px;border-left:3px solid #00b894">
+                        <div style="font-size:0.75em;color:#b2bec3">🟢 in Betrieb</div>
+                        <div style="font-size:1.4em;font-weight:bold;color:#00b894">{_n_ok}</div>
+                    </div>
+                    <div style="background:#0f1a30;border-radius:4px;padding:10px;border-left:3px solid #e17055">
+                        <div style="font-size:0.75em;color:#b2bec3">🟠 Sanierung empfohlen</div>
+                        <div style="font-size:1.4em;font-weight:bold;color:#e17055">{_n_san}</div>
+                    </div>
+                    <div style="background:#0f1a30;border-radius:4px;padding:10px;border-left:3px solid #e94560">
+                        <div style="font-size:0.75em;color:#b2bec3">🔴 Störung</div>
+                        <div style="font-size:1.4em;font-weight:bold;color:#e94560">{_n_def}</div>
+                    </div>
+                </div>
+            </div></div>'''),
+
+            # Armaturenliste (gruppiert)
+            mo.Html(f'<div class="pls">{armaturen_liste_html}</div>'),
+
+            # Auffällige Armaturen mit Details (Typenschild + Betriebsdaten)
+            mo.Html(f'''<div class="pls"><div class="pls-c">
+                <h3>🔍 Auffällige Armaturen (Details)</h3>
+                <p style="font-size:0.82em;color:#b2bec3;margin:0 0 10px">
+                    Klick auf eine Zeile öffnet die Detailansicht mit Original-Typenschild und
+                    Betriebsdaten. OK-Armaturen können über den Auswahldialog unten eingesehen werden.
+                </p>
+                {auffaellig_html}
+            </div></div>'''),
+
+            # Wartungsanmeldung
+            mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#fdcb6e">
+                <h3 style="color:#fdcb6e">📨 Wartung bei Leitwarte anmelden</h3>
+                <p style="font-size:0.85em;color:#b2bec3;margin:0 0 10px">
+                    Armatur aus der Liste wählen und den Wartungsauftrag an die Leitwarte übermitteln.
+                    Das PLS erzeugt automatisch ein strukturiertes Auftragsformular mit allen Stammdaten.
+                </p>
+            </div></div>'''),
+            mo.hstack([armatur_auswahl, wartung_btn], justify="start", gap=1),
+            mo.Html(f'<div class="pls">{wartung_html}</div>') if wartung_html else mo.Html(""),
+        ])
+
+
+        # === ZWEISTUFIGE TAB-STRUKTUR ===
+        # Gruppierung der 13 Einzeltabs in 6 Hauptrubriken, die
+        # den Fachperspektiven der Unterrichtsnutzung entsprechen:
+        #   🏭 Anlage            – Topografie & Schema
+        #   ⚙️ Betrieb           – Live-Steuerung & Verlaufsdaten
+        #   🔬 Prozess           – Detailsicht je Verfahrensstufe
+        #   🔧 Instandhaltung    – Ausrüstung & Wartung
+        #   📐 Regelung & Labor  – Regelungstechnik, Chemie, Analytik
+        #   🏗️ Modifikationen   – strategische Umbauten (eigenständig)
+        #
+        # lazy=True: Inhalte nicht-aktiver (Unter-)Tabs werden erst
+        # beim Anklicken berechnet → spürbar schnelleres Erstladen.
         tabs = mo.ui.tabs({
-            "🏭 Übersicht": overview,
-            "⚙️ Steuerung": steuerung,
-            "📋 Fließschema": fliessschema,
+            "🏭 Anlage": mo.ui.tabs({
+                "Übersicht": overview,
+                "Fließschema": fliessschema,
+                "Außenanlagen": aussenanlagen,
+            }, lazy=True),
+            "⚙️ Betrieb": mo.ui.tabs({
+                "Steuerung": steuerung,
+                "Ablauf & Verlauf": ablauf,
+            }, lazy=True),
+            "🔬 Prozess": mo.ui.tabs({
+                "Zulauf": zulauf,
+                "Biologie": biologie,
+                "Nachklärung": nachklaerung,
+            }, lazy=True),
+            "🔧 Instandhaltung": mo.ui.tabs({
+                "Pumpen": pumpen,
+                "Armaturen": armaturen,
+            }, lazy=True),
+            "📐 Regelung & Labor": mo.ui.tabs({
+                "Regelung": regelung,
+                "Labor": labor,
+            }, lazy=True),
             "🏗️ Modifikationen": modifikationen,
-            "🌊 Ablauf & Verlauf": ablauf,
-            "🚰 Zulauf": zulauf,
-            "🔬 Biologie": biologie,
-            "⬇️ Nachklärung": nachklaerung,
-            "🔧 Pumpen": pumpen,
-            "📐 Regelung": regelung,
-            "🧪 Labor": labor,
-        })
+        }, lazy=True)
 
         mo.output.replace(mo.vstack([mo.Html(hdr), tabs]))
     return
