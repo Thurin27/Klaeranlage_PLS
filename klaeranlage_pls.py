@@ -102,9 +102,8 @@ def _(mo):
     mod_intermit = mo.ui.switch(label="Intermittierende Belüftung (SBR-ähnlich)")
     mod_anammox = mo.ui.switch(label="Seitenstromentstickung (Deammonifikation)")
     mod_stufe4 = mo.ui.switch(label="4. Reinigungsstufe (GAK-Filter)")
-    mod_faulturm = mo.ui.switch(label="Faulturm + BHKW")
     mod_pv = mo.ui.switch(label="PV-Anlage (Dachflächen)")
-    return mod_anammox, mod_faulturm, mod_intermit, mod_membran, mod_nh4_sensor, mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo
+    return mod_anammox, mod_intermit, mod_membran, mod_nh4_sensor, mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo
 
 
 @app.cell
@@ -154,6 +153,521 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    # === PUMPENTECHNIK: Umbauplanung (Auswahl gemäß verfügbaren Herstellerkennlinien) ===
+    _opt_tal = {
+        "Bestand – Sewabloc F 100-316, Laufrad ø279": "Sewabloc F 100-316|279",
+        "Laufradtausch – Sewabloc F 100-316, Laufrad ø310": "Sewabloc F 100-316|310",
+        "Neupumpe – Sewatec E 100-317, Laufrad ø286": "Sewatec E 100-317|286",
+        "Neupumpe – Sewatec E 100-317, Laufrad ø299": "Sewatec E 100-317|299",
+        "Neupumpe – Sewatec E 100-317, Laufrad ø315": "Sewatec E 100-317|315",
+        "Neupumpe – Sewatec E 100-317, Laufrad ø328": "Sewatec E 100-317|328",
+    }
+    _opt_rs = {
+        "Bestand – Sewabloc F 100-252, Laufrad ø235": "Sewabloc F 100-252|235",
+        "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø279": "Sewabloc F 100-316|279|umsetzen",
+        "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø310": "Sewabloc F 100-316|310|umsetzen",
+    }
+    _opt_ft = {
+        "Bestand – Sewabloc F 100-254, Laufrad ø200": "Sewabloc F 100-254|200",
+        "Laufradtausch – Sewabloc F 100-254, Laufrad ø265": "Sewabloc F 100-254|265",
+        "Neupumpe – Sewabloc F 80-252, Laufrad ø180": "Sewabloc F 80-252|180",
+        "Neupumpe – Sewabloc F 80-252, Laufrad ø200": "Sewabloc F 80-252|200",
+        "Neupumpe – Sewabloc F 80-252, Laufrad ø210": "Sewabloc F 80-252|210",
+    }
+    kf_tal = mo.ui.dropdown(options=_opt_tal, value="Bestand – Sewabloc F 100-316, Laufrad ø279", label="Aggregat")
+    kf_tal_fu = mo.ui.switch(label="Frequenzumrichter")
+    kf_tal_n = mo.ui.slider(start=725, stop=1540, step=5, value=1450, label="Drehzahl bei FU-Betrieb [1/min]", show_value=True)
+    kf_rs = mo.ui.dropdown(options=_opt_rs, value="Bestand – Sewabloc F 100-252, Laufrad ø235", label="Aggregat")
+    kf_rs_fu = mo.ui.switch(label="Frequenzumrichter")
+    kf_rs_n = mo.ui.slider(start=725, stop=1540, step=5, value=1450, label="Drehzahl bei FU-Betrieb [1/min]", show_value=True)
+    kf_ft = mo.ui.dropdown(options=_opt_ft, value="Bestand – Sewabloc F 100-254, Laufrad ø200", label="Aggregat")
+    kf_ft_fu = mo.ui.switch(label="Frequenzumrichter")
+    kf_ft_n = mo.ui.slider(start=725, stop=1540, step=5, value=1450, label="Drehzahl bei FU-Betrieb [1/min]", show_value=True)
+    kf_umbau_btn = mo.ui.run_button(label="🔧 Umbau durchführen und in Betrieb nehmen", kind="success")
+    kf_reset_btn = mo.ui.run_button(label="↺ Bestand wiederherstellen", kind="neutral")
+    return (kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+            kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn)
+
+
+@app.cell
+def _(mo):
+    # === Installierter Zustand der Pumpentechnik (persistent) ===
+    PK_BESTAND = dict(
+        tal=dict(typ="Sewabloc F 100-316", d=279, fu=False, n=1450),
+        rs=dict(typ="Sewabloc F 100-252", d=235, fu=False, n=1450, umsetzen=False),
+        ft=dict(typ="Sewabloc F 100-254", d=200, fu=False, n=1450),
+        protokoll=[],
+    )
+    get_pk, set_pk = mo.state(PK_BESTAND)
+    return PK_BESTAND, get_pk, set_pk
+
+
+@app.cell
+def _(PK_BESTAND, get_pk, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+      kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn, set_pk):
+    # === Umbau ausführen: Auswahl → installierter Zustand ===
+    kf_meldung = ""
+    if kf_reset_btn.value:
+        set_pk(PK_BESTAND)
+        kf_meldung = "↺ Pumpentechnik auf Bestand zurückgesetzt."
+    elif kf_umbau_btn.value:
+        _t = kf_tal.value.split("|")
+        _r = kf_rs.value.split("|")
+        _f = kf_ft.value.split("|")
+        if len(_r) > 2 and _t[0] == "Sewabloc F 100-316":
+            kf_meldung = ("⚠️ Umbau nicht möglich: Die Sewabloc F 100-316 (P-001) wird im PW Talstraße weiter benötigt. "
+                          "Sie kann nur umgesetzt werden, wenn P-001 durch eine Neupumpe ersetzt wird.")
+        else:
+            _alt = get_pk()
+            _neu = dict(
+                tal=dict(typ=_t[0], d=int(_t[1]), fu=kf_tal_fu.value, n=kf_tal_n.value if kf_tal_fu.value else 1450),
+                rs=dict(typ=_r[0], d=int(_r[1]), fu=kf_rs_fu.value, n=kf_rs_n.value if kf_rs_fu.value else 1450,
+                        umsetzen=len(_r) > 2),
+                ft=dict(typ=_f[0], d=int(_f[1]), fu=kf_ft_fu.value, n=kf_ft_n.value if kf_ft_fu.value else 1450),
+            )
+            _eintr = []
+            for _key, _name in [("tal", "P-001 PW Talstraße"), ("rs", "P3.1 RS-Pumpwerk"), ("ft", "P10.1 Faulturm")]:
+                _c = _neu[_key]
+                if _c != _alt[_key]:
+                    _txt = f"{_name}: {_c['typ']}, Laufrad ø{_c['d']} mm, " + (f"FU {_c['n']} 1/min" if _c["fu"] else "Festdrehzahl")
+                    _eintr.append(_txt)
+            _neu["protokoll"] = list(_alt.get("protokoll", [])) + _eintr
+            if _eintr:
+                set_pk(_neu)
+                kf_meldung = "✅ Umbau durchgeführt und in Betrieb genommen: " + "; ".join(_eintr)
+            else:
+                kf_meldung = "ℹ️ Keine Änderung gegenüber dem installierten Zustand."
+    return (kf_meldung,)
+
+
+@app.cell
+def _(get_pk, np):
+    # === PUMPENMODELL: KSB-Kennlinien · Anlagenkennlinien · Betriebspunkte ===
+    # Kennlinien digitalisiert aus KSB Kennlinienheft Sewatec/Sewabloc.
+    # H-Stützstellen im Abstand 10 m³/h ab Q = 0 (letzter Wert = Kurvenende q_end),
+    # η-Stützstellen = Markierungen im Diagramm (Q in m³/h, η in %).
+    # Betriebspunkt = Schnittpunkt Pumpenkennlinie / Anlagenkennlinie (kein fester Wert).
+
+    def _pchip(xs, ys, x):
+        """Monotone kubische Hermite-Interpolation (Fritsch-Carlson), lineare Extrapolation."""
+        n = len(xs)
+        hh = [xs[i + 1] - xs[i] for i in range(n - 1)]
+        dd = [(ys[i + 1] - ys[i]) / hh[i] for i in range(n - 1)]
+        m = [0.0] * n
+        for k in range(1, n - 1):
+            if dd[k - 1] * dd[k] > 0:
+                w1 = 2 * hh[k] + hh[k - 1]
+                w2 = hh[k] + 2 * hh[k - 1]
+                m[k] = (w1 + w2) / (w1 / dd[k - 1] + w2 / dd[k])
+        if n > 2:
+            m0 = ((2 * hh[0] + hh[1]) * dd[0] - hh[0] * dd[1]) / (hh[0] + hh[1])
+            if m0 * dd[0] <= 0: m0 = 0.0
+            elif dd[0] * dd[1] <= 0 and abs(m0) > abs(3 * dd[0]): m0 = 3 * dd[0]
+            m[0] = m0
+            mn = ((2 * hh[-1] + hh[-2]) * dd[-1] - hh[-1] * dd[-2]) / (hh[-1] + hh[-2])
+            if mn * dd[-1] <= 0: mn = 0.0
+            elif dd[-1] * dd[-2] <= 0 and abs(mn) > abs(3 * dd[-1]): mn = 3 * dd[-1]
+            m[-1] = mn
+        else:
+            m[0] = m[-1] = dd[0]
+        if x <= xs[0]:
+            return ys[0] + m[0] * (x - xs[0])
+        if x >= xs[-1]:
+            return ys[-1] + m[-1] * (x - xs[-1])
+        i = 0
+        while xs[i + 1] < x:
+            i += 1
+        t = (x - xs[i]) / hh[i]
+        h00 = (1 + 2 * t) * (1 - t) ** 2
+        h10 = t * (1 - t) ** 2
+        h01 = t ** 2 * (3 - 2 * t)
+        h11 = t ** 2 * (t - 1)
+        return h00 * ys[i] + h10 * hh[i] * m[i] + h01 * ys[i + 1] + h11 * hh[i] * m[i + 1]
+
+    KENNLINIEN = dict()
+    def _kl(typ, d, n, q_end, h, eta, q_min=None, q_max=None):
+        qs = [10.0 * i for i in range(len(h) - 1)] + [float(q_end)]
+        KENNLINIEN[(typ, d, n)] = dict(typ=typ, d=d, n=n, q_end=float(q_end), q=qs, h=h,
+                                        eta_q=[0.0] + [p[0] for p in eta], eta_v=[0.0] + [p[1] for p in eta],
+                                        q_min=q_min, q_max=q_max)
+
+    # --- Bestand ---
+    _kl("Sewabloc F 100-316", 279, 1450, 206,
+        [30.01, 29.52, 29.04, 28.56, 28.10, 27.64, 27.19, 26.75, 26.31, 25.88, 25.45, 25.01,
+         24.58, 24.15, 23.72, 23.28, 22.84, 22.39, 21.93, 21.47, 21.00, 20.71],
+        [(31.7, 30), (50.6, 40), (89.5, 50), (123, 54), (165, 55.8), (206, 54.6)])
+    _kl("Sewabloc F 100-252", 235, 1450, 184,
+        [15.30, 15.14, 14.89, 14.56, 14.17, 13.71, 13.20, 12.66, 12.08, 11.48, 10.86, 10.25,
+         9.64, 9.05, 8.48, 7.95, 7.46, 7.03, 6.66, 6.53],
+        [(23, 20), (39, 30), (61.7, 40), (85, 45), (109, 46.5), (136.3, 45), (184, 38)], q_max=127)
+    _kl("Sewabloc F 100-254", 200, 1450, 118,
+        [10.68, 10.49, 10.21, 9.85, 9.42, 8.91, 8.33, 7.67, 6.95, 6.15, 5.30, 4.38, 3.60],
+        [(19.5, 20), (33.3, 30), (60.9, 40), (70.2, 41.0), (84.2, 40), (114.8, 30)])
+    # --- Optimierungsvarianten (Kennlinienblatt Maßnahmen) ---
+    _kl("Sewabloc F 100-316", 310, 1450, 237,
+        [37.51, 37.03, 36.54, 36.06, 35.59, 35.11, 34.64, 34.18, 33.71, 33.25, 32.80, 32.34,
+         31.90, 31.45, 31.01, 30.57, 30.13, 29.70, 29.27, 28.84, 28.41, 27.99, 27.57, 27.16, 26.87],
+        [(38.6, 30), (62, 40), (106, 50), (161, 54), (193.6, 54.7), (221.4, 54), (237, 53.2)])
+    _kl("Sewabloc F 100-316", 310, 905, 148,
+        [14.30, 14.09, 13.87, 13.62, 13.36, 13.09, 12.82, 12.53, 12.25, 11.97, 11.69, 11.41,
+         11.15, 10.90, 10.67, 10.49],
+        [(29, 30), (46, 40), (60, 45), (97, 50), (130, 51.1), (155, 50)])
+    _kl("Sewatec E 100-317", 286, 1450, 219,
+        [29.68, 28.77, 27.90, 27.07, 26.27, 25.50, 24.75, 24.02, 23.31, 22.61, 21.92, 21.23,
+         20.53, 19.84, 19.13, 18.40, 17.66, 16.90, 16.11, 15.29, 14.43, 13.53, 12.68],
+        [(66.6, 55), (83, 60), (111.4, 65), (145.4, 66.8), (184.4, 65), (217.8, 60)], q_min=44)
+    _kl("Sewatec E 100-317", 299, 1450, 229,
+        [32.32, 31.30, 30.35, 29.47, 28.64, 27.87, 27.14, 26.45, 25.79, 25.15, 24.53, 23.92,
+         23.31, 22.69, 22.06, 21.40, 20.73, 20.01, 19.26, 18.46, 17.60, 16.67, 15.68, 14.72],
+        [(66.8, 55), (81.9, 60), (104, 65), (140.5, 69), (158.7, 69.4), (176, 69), (211.8, 65)], q_min=48)
+    _kl("Sewatec E 100-317", 315, 1450, 239,
+        [36.52, 35.42, 34.41, 33.49, 32.64, 31.87, 31.15, 30.48, 29.85, 29.25, 28.67, 28.11,
+         27.55, 26.98, 26.39, 25.79, 25.14, 24.46, 23.72, 22.92, 22.05, 21.10, 20.07, 18.93, 17.81],
+        [(68.5, 55), (82.8, 60), (103.3, 65), (129, 69), (176, 71.7), (219.5, 69)], q_min=52)
+    _kl("Sewatec E 100-317", 328, 1450, 250,
+        [39.46, 38.31, 37.27, 36.33, 35.48, 34.71, 34.00, 33.36, 32.77, 32.21, 31.69, 31.18,
+         30.67, 30.17, 29.65, 29.11, 28.53, 27.91, 27.23, 26.49, 25.67, 24.77, 23.77, 22.66, 21.44, 20.09],
+        [(69.9, 55), (84.9, 60), (104.4, 65), (126.8, 69), (151, 72), (190.9, 74.1), (225, 72), (241.3, 69)], q_min=56)
+    _kl("Sewabloc F 80-252", 180, 1450, 119,
+        [10.55, 10.53, 10.24, 9.70, 8.97, 8.10, 7.12, 6.09, 5.05, 4.05, 3.12, 2.32, 1.75],
+        [(7.9, 20), (13.8, 30), (22.4, 40), (39.3, 50), (46.8, 51.5), (58, 50), (81, 40), (100, 30), (116, 20)])
+    _kl("Sewabloc F 100-254", 265, 960, 90,
+        [10.08, 10.02, 9.91, 9.75, 9.53, 9.27, 8.97, 8.62, 8.23, 7.81],
+        [(22.5, 30), (34.3, 40), (50.5, 50), (73.3, 58), (97, 60.3)])
+    _kl("Sewabloc F 100-254", 265, 1210, 120,
+        [16.10, 16.07, 15.91, 15.68, 15.43, 15.13, 14.86, 14.48, 14.07, 13.64, 13.13, 12.61, 12.21],
+        [(27.8, 30), (41.9, 40), (61.5, 50), (86.9, 58), (117.7, 61.4), (156, 58), (191.8, 50)])
+    _kl("Sewabloc F 80-252", 200, 1450, 132,
+        [12.85, 12.85, 12.54, 12.02, 11.38, 10.61, 9.76, 8.78, 7.78, 6.90, 6.03, 5.17, 4.36, 3.63, 3.50],
+        [(7.9, 20), (12.8, 30), (20.8, 40), (34.9, 50), (59.7, 55.0), (84.9, 50), (114.8, 40)])
+    _kl("Sewabloc F 80-252", 210, 1450, 139,
+        [14.17, 14.17, 13.85, 13.26, 12.63, 11.93, 11.06, 10.08, 9.11, 8.10, 7.19, 6.39, 5.62, 4.91, 4.18],
+        [(12.7, 30), (20.2, 40), (32.7, 50), (50.6, 56), (64.9, 57.1), (78.2, 56), (104.2, 50)])
+
+    def _ns(typ, d):
+        return sorted(kk[2] for kk in KENNLINIEN if kk[0] == typ and kk[1] == d)
+
+    def _basis(kl):
+        """Nächstgelegene gezeichnete Drehzahlkurve und Drehzahlverhältnis."""
+        typ, d, n = kl
+        if kl in KENNLINIEN:
+            return KENNLINIEN[kl], 1.0
+        n0 = min(_ns(typ, d), key=lambda x: abs(x - n))
+        return KENNLINIEN[(typ, d, n0)], n / n0
+
+    def h_pumpe(kl, q):
+        """Förderhöhe; Drehzahlen ohne eigene Kurve über Affinitätsgesetze (Q ~ n, H ~ n²)."""
+        k, r = _basis(kl)
+        return r * r * _pchip(k["q"], k["h"], q / r)
+
+    def eta_pumpe(kl, q):
+        """Wirkungsgrad; zwischen gezeichneten Drehzahlkurven linear interpoliert (wie im KSB-Diagramm)."""
+        typ, d, n = kl
+        _e = lambda k, qq: _pchip(k["eta_q"], k["eta_v"], qq)
+        if kl in KENNLINIEN:
+            v = _e(KENNLINIEN[kl], q)
+        else:
+            ns = _ns(typ, d)
+            if len(ns) >= 2:
+                lo = max([x for x in ns if x <= n], default=ns[0])
+                hi = min([x for x in ns if x >= n], default=ns[-1])
+                if lo == hi:
+                    v = _e(KENNLINIEN[(typ, d, lo)], q)
+                else:
+                    w = (n - lo) / (hi - lo)
+                    v = (1 - w) * _e(KENNLINIEN[(typ, d, lo)], q) + w * _e(KENNLINIEN[(typ, d, hi)], q)
+            else:
+                k, r = _basis(kl)
+                v = _e(k, q / r)
+        return max(0.01, v / 100.0)
+
+    def q_end(kl):
+        k, r = _basis(kl)
+        return k["q_end"] * r
+
+    def grenzen(kl):
+        k, r = _basis(kl)
+        return (k["q_min"] * r if k["q_min"] else None, k["q_max"] * r if k["q_max"] else None)
+
+    # --- Anlagenkennlinien je Standort: H = H_geo + k·Q² ---
+    STANDORTE = dict(
+        APW03=dict(name="PW Talstraße → Speicherbecken B-002/B-003", z_aus=75.00, z_ref=55.00,
+                   h_geo=20.0, k=6.1 / 85.0 ** 2, rho=1000.0),
+        RS=dict(name="RS-Pumpwerk → Verteilerbauwerk BB", h_geo=6.0, k=6.08 / 80.0 ** 2, rho=1003.0),
+        FT=dict(name="Umwälzkreis Faulturm (geschlossen)", h_geo=0.0, k=9.64 / 35.0 ** 2, rho=1100.0),
+    )
+
+    def h_anlage(ort, q, h_geo=None):
+        s = STANDORTE[ort]
+        hg = s["h_geo"] if h_geo is None else h_geo
+        return hg + s["k"] * q * q
+
+    def betriebspunkt(kl, ort, n_par=1, h_geo=None):
+        """Schnittpunkt Pumpen-/Anlagenkennlinie. n_par gleiche Pumpen parallel."""
+        f = lambda qg: h_pumpe(kl, qg / n_par) - h_anlage(ort, qg, h_geo)
+        lo, hi = 0.5, q_end(kl) * n_par
+        if f(lo) <= 0:
+            return dict(Q=0.0, Q_ges=0.0, H=h_pumpe(kl, 0.0), eta=0.0, gefoerdert=False)
+        if f(hi) > 0:
+            qg = hi
+        else:
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                if f(mid) > 0: lo = mid
+                else: hi = mid
+            qg = 0.5 * (lo + hi)
+        q1 = qg / n_par
+        return dict(Q=q1, Q_ges=qg, H=h_pumpe(kl, q1), eta=eta_pumpe(kl, q1), gefoerdert=True)
+
+    # --- Aggregate (Stammdaten, Typenschild, Messstellen) ---
+    _MOT15 = dict(hersteller="VEM", typ="K21R 160 L4", pn=15.0, un="400 V Δ", i_n=27.4, cos=0.85,
+                  n_n=1460, ie="IE3", eta=(93.0, 93.1, 92.4), ip="IP55", isokl="F", bg="160L")
+    _MOT75 = dict(hersteller="VEM", typ="K21R 132 M4", pn=7.5, un="400 V Δ", i_n=14.0, cos=0.84,
+                  n_n=1455, ie="IE3", eta=(92.0, 92.1, 91.3), ip="IP55", isokl="F", bg="132M")
+    _MOT4 = dict(hersteller="VEM", typ="K21R 112 M4", pn=4.0, un="400 V Δ", i_n=7.9, cos=0.82,
+                 n_n=1445, ie="IE3", eta=(89.0, 89.2, 88.1), ip="IP55", isokl="F", bg="112M")
+    _BS_RS = dict(zip(["P3.1", "P3.2", "P3.3", "P3.4", "P3.5", "P3.6"],
+                      [118420, 121050, 116880, 119730, 104210, 31560]))
+    AGGREGATE = dict()
+    AGGREGATE["P-001"] = dict(kks="P-001", bez="Förderpumpe PW Talstraße (Grundlast)", ort="APW03",
+        kl=("Sewabloc F 100-316", 279, 1450), eta_m=0.93, motor=_MOT15, baujahr=2012, serien="9971018342/100",
+        ausl_q=100, ausl_h=25.4, medium="Rohabwasser", rho=1000, t_med="10–20", dn_s=150, dn_d=100,
+        fi="APW03-FI 01", fi_bez="Durchfluss Druckleitung", pi_s="APW03-PI 11", pi_d="APW03-PI 12",
+        bh0=63480, anlauf="Stern-Dreieck")
+    AGGREGATE["P-002"] = dict(AGGREGATE["P-001"], kks="P-002", bez="Förderpumpe PW Talstraße (Spitzenlast/Reserve)",
+        serien="9971018343/100", pi_s="APW03-PI 13", pi_d="APW03-PI 14", bh0=2960)
+    for _i, _k in enumerate(["P3.1", "P3.2", "P3.3", "P3.4", "P3.5", "P3.6"]):
+        AGGREGATE[_k] = dict(kks=_k, bez="Rücklaufschlammpumpe", ort="RS",
+            kl=("Sewabloc F 100-252", 235, 1450), eta_m=0.92, motor=_MOT75, baujahr=2011,
+            serien=f"9968204{17 + _i}/100", ausl_q=95, ausl_h=11.2, medium="Rücklaufschlamm", rho=1003,
+            t_med="10–20", dn_s=125, dn_d=100, fi=f"FI 41{_i + 1}", fi_bez="Förderstrom",
+            pi_s=f"PI 42{_i + 1}", pi_d=f"PI 43{_i + 1}",
+            bh0=_BS_RS[_k], anlauf="Stern-Dreieck")
+    AGGREGATE["P10.1"] = dict(kks="P10.1", bez="Umwälzpumpe Faulturm (Betrieb)", ort="FT",
+        kl=("Sewabloc F 100-254", 200, 1450), eta_m=0.89, motor=_MOT4, baujahr=2014, serien="9973556120/100",
+        ausl_q=50, ausl_h=8.9, medium="eingedickter Schlamm / Faulschlamm", rho=1100, t_med="35–38",
+        dn_s=125, dn_d=100, fi="FI 601", fi_bez="Durchfluss Sammelleitung", pi_s="PI 602", pi_d="PI 603",
+        bh0=98640, anlauf="direkt")
+    AGGREGATE["P10.2"] = dict(AGGREGATE["P10.1"], kks="P10.2", bez="Umwälzpumpe Faulturm (Reserve)",
+        serien="9973556121/100", pi_s="PI 604", pi_d="PI 605", bh0=7410)
+
+    for _ag in AGGREGATE.values():
+        _ag["n_nenn"] = 1450
+        _ag["fu"] = False
+        _ag["umbau"] = ""
+    _pk = get_pk()
+    _p001_alt = dict(AGGREGATE["P-001"])
+    _NEU = {
+        "Sewatec E 100-317": dict(motor=_MOT15, eta_m=0.93, ausl_q=85, ausl_h=26.0, serien="9985120447/100"),
+        "Sewabloc F 80-252": dict(motor=_MOT4, eta_m=0.89, ausl_q=35, ausl_h=9.6, serien="9985120452/100"),
+    }
+    for _kks, _key in [("P-001", "tal"), ("P3.1", "rs"), ("P10.1", "ft")]:
+        _c = _pk[_key]
+        _ag = AGGREGATE[_kks]
+        if _c.get("umsetzen"):
+            _ag.update(motor=_p001_alt["motor"], eta_m=_p001_alt["eta_m"], baujahr=_p001_alt["baujahr"],
+                       serien=_p001_alt["serien"], ausl_q=_p001_alt["ausl_q"], ausl_h=_p001_alt["ausl_h"],
+                       bh0=_p001_alt["bh0"], umbau="umgesetzt aus PW Talstraße")
+        elif _c["typ"] != _ag["kl"][0]:
+            _ag.update(_NEU[_c["typ"]], baujahr=2026, bh0=0, umbau="Neupumpe")
+        elif _c["d"] != _ag["kl"][1]:
+            _ag["umbau"] = "Laufrad getauscht"
+        _ag["kl"] = (_c["typ"], _c["d"], _c["n"] if _c["fu"] else 1450)
+        _ag["fu"] = bool(_c["fu"])
+        if _ag["fu"]:
+            _ag["anlauf"] = "über FU"
+            _ag["umbau"] = (_ag["umbau"] + ", FU nachgerüstet").lstrip(", ")
+
+    RS_N_MAX = 6
+    RS_Q_PUMPE = betriebspunkt(AGGREGATE["P3.2"]["kl"], "RS")["Q"]
+    RS_Q_P31 = betriebspunkt(AGGREGATE["P3.1"]["kl"], "RS")["Q"]
+
+    def rs_stufen(q_zu_m3d, rv):
+        """Anzahl RS-Pumpen in Betrieb (Stufenschaltung auf RS-Sollwert)."""
+        return int(min(RS_N_MAX, max(1, round(q_zu_m3d * rv / 24.0 / max(RS_Q_PUMPE, 1.0)))))
+
+    # --- PW Talstraße: Schaltbetrieb über Pumpensumpf (Minutenschritte) ---
+    TAL = dict(A_sumpf=25.0, z_sohle=53.90, z_aus1=54.60, z_ein1=55.40, z_ein2=55.80, z_aus2=55.10,
+               z_hw=56.20, z_nue=56.60, z_achse=51.80, q_tw=42.5, V_sb=800.0, q_dr=42.0)
+    _TG = [0.55, 0.45, 0.40, 0.38, 0.40, 0.50, 0.75, 1.05, 1.25, 1.35, 1.35, 1.30,
+           1.25, 1.20, 1.15, 1.10, 1.10, 1.15, 1.20, 1.20, 1.10, 0.95, 0.80, 0.65]
+    _tgm = sum(_TG) / 24.0
+    TAGESGANG = [v / _tgm for v in _TG]
+
+    def talstrasse_sim(hist, th, q_tw_ka=12000.0):
+        """Schaltbetrieb PW Talstraße der letzten 48 h (2-min-Schritte, 12 h Vorlauf)."""
+        kl1 = AGGREGATE["P-001"]["kl"]
+        s = STANDORTE["APW03"]
+        z0, dz = 54.2, 0.1
+        zg = [z0 + dz * i for i in range(26)]
+        bp1 = [betriebspunkt(kl1, "APW03", 1, s["z_aus"] - z) for z in zg]
+        bp2 = [betriebspunkt(kl1, "APW03", 2, s["z_aus"] - z) for z in zg]
+        q1g = [b["Q"] for b in bp1]; h1g = [b["H"] for b in bp1]
+        q2g = [b["Q"] for b in bp2]; h2g = [b["H"] for b in bp2]
+        def _zi(arr, z):
+            x = min(max((z - z0) / dz, 0.0), len(arr) - 1.001)
+            i = int(x); return arr[i] + (arr[i + 1] - arr[i]) * (x - i)
+        ht = [p["t"] for p in hist] if hist else [0.0]
+        fq = [p.get("Q_roh", q_tw_ka) / q_tw_ka for p in hist] if hist else [1.0]
+        t0 = int(th) - 60
+        qin_h = [TAL["q_tw"] * TAGESGANG[(t0 + j) % 24] * float(np.interp(t0 + j + 0.5, ht, fq)) for j in range(61)]
+        dt = 2.0 / 60.0
+        n = int(round(60.0 / dt))
+        z = 55.00; on1 = False; on2 = False; V = 380.0
+        T, Z, QF, Q1, O1, O2, H1, VS, UEB, NUE = [], [], [], [], [], [], [], [], [], []
+        for i in range(n):
+            t = t0 + i * dt
+            q_in = qin_h[int(i * dt)]
+            if z >= TAL["z_ein1"]: on1 = True
+            if z <= TAL["z_aus1"]: on1 = False
+            if z >= TAL["z_ein2"]: on2 = True
+            if z <= TAL["z_aus2"]: on2 = False
+            if on1 and on2:
+                qp = _zi(q2g, z); q_out = 2 * qp; hp = _zi(h2g, z)
+            elif on1:
+                qp = _zi(q1g, z); q_out = qp; hp = _zi(h1g, z)
+            else:
+                qp = 0.0; q_out = 0.0; hp = 0.0
+            q_dr = min(TAL["q_dr"], V / dt + q_out)
+            V = V + (q_out - q_dr) * dt
+            ueb = V > TAL["V_sb"]
+            V = min(max(V, 0.0), TAL["V_sb"])
+            nue = z >= TAL["z_nue"]
+            if t >= th - 48.0:
+                T.append(t); Z.append(z); QF.append(q_out); Q1.append(qp if on1 else 0.0)
+                O1.append(on1); O2.append(on1 and on2); H1.append(hp); VS.append(V)
+                UEB.append(ueb); NUE.append(nue)
+            z = min(z + (q_in - q_out) * dt / TAL["A_sumpf"], TAL["z_nue"])
+        d = int(th // 24)
+        a, b = 24.0 * (d - 1), 24.0 * d
+        lz1 = sum(1 for t, o in zip(T, O1) if a <= t < b and o) * dt
+        lz2 = sum(1 for t, o in zip(T, O2) if a <= t < b and o) * dt
+        sp1 = sum(1 for j in range(1, len(T)) if a <= T[j] < b and O1[j] and not O1[j - 1])
+        sp2 = sum(1 for j in range(1, len(T)) if a <= T[j] < b and O2[j] and not O2[j - 1])
+        q_ref = _zi(q1g, 55.0)
+        vor = 0.0
+        for p in hist:
+            if p["t"] < th - 48.0:
+                vor += min(1.0, TAL["q_tw"] * p.get("Q_roh", q_tw_ka) / q_tw_ka / q_ref)
+        bh1 = AGGREGATE["P-001"]["bh0"] + vor + sum(O1) * dt
+        bh2 = AGGREGATE["P-002"]["bh0"] + sum(O2) * dt
+        return dict(t=T, z=Z, q=QF, q1=Q1, on1=O1, on2=O2, h1=H1, v_sb=VS, ueb=UEB, nue=NUE,
+                    lz1=lz1, lz2=lz2, sp1=sp1, sp2=sp2, bh1=bh1, bh2=bh2, dt=dt)
+
+    # --- Typenschilder (SVG) ---
+    def typenschild_pumpe_svg(a):
+        kl = a["kl"]
+        _uid = a["kks"].replace(".", "_").replace("-", "_")
+        return f'''<svg viewBox="0 0 420 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;height:auto">
+  <defs><linearGradient id="tp{_uid}" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#ececf0"/><stop offset="100%" style="stop-color:#b4b4ba"/></linearGradient></defs>
+  <rect x="3" y="3" width="414" height="224" rx="6" fill="url(#tp{_uid})" stroke="#6a6a78" stroke-width="1"/>
+  <rect x="3" y="3" width="414" height="38" rx="6" fill="#1a4a90"/>
+  <text x="34" y="30" fill="#ffffff" font-family="Arial,sans-serif" font-size="21" font-weight="bold" letter-spacing="3">KSB</text>
+  <text x="386" y="28" text-anchor="end" fill="#ffffff" font-family="Arial,sans-serif" font-size="12">Frankenthal · Germany</text>
+  <text x="20" y="64" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Typ</text>
+  <text x="95" y="64" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="13" font-weight="bold">{kl[0]}</text>
+  <line x1="95" y1="68" x2="400" y2="68" stroke="#404050" stroke-width="0.5"/>
+  <text x="20" y="88" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Nr.</text>
+  <text x="95" y="88" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">{a["serien"]}</text>
+  <text x="270" y="88" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Baujahr</text>
+  <text x="335" y="88" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">{a["baujahr"]}</text>
+  <line x1="20" y1="96" x2="400" y2="96" stroke="#1a4a90" stroke-width="1"/>
+  <text x="20" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Q</text>
+  <text x="60" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">{a["ausl_q"]:.0f}&#160;m³/h</text>
+  <text x="160" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">H</text>
+  <text x="185" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">{a["ausl_h"]:.1f}&#160;m</text>
+  <text x="270" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">n</text>
+  <text x="290" y="118" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">{a.get("n_nenn", 1450)}&#160;1/min</text>
+  <text x="20" y="142" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Laufrad-Ø</text>
+  <text x="95" y="142" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">{kl[1]}&#160;mm</text>
+  <text x="270" y="142" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">PN</text>
+  <text x="300" y="142" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">10</text>
+  <text x="20" y="166" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10.5" font-weight="bold">Werkstoff</text>
+  <text x="95" y="166" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">Gehäuse EN-GJL-250 · Laufrad EN-GJL-250</text>
+  <line x1="20" y1="178" x2="400" y2="178" stroke="#1a4a90" stroke-width="1"/>
+  <text x="210" y="200" text-anchor="middle" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10">Auslegungspunkt lt. Auftrag · Kennlinie siehe Herstellerunterlagen</text>
+  <circle cx="18" cy="20" r="3.5" fill="#707080"/><circle cx="402" cy="20" r="3.5" fill="#707080"/>
+  <circle cx="18" cy="212" r="3.5" fill="#707080"/><circle cx="402" cy="212" r="3.5" fill="#707080"/>
+</svg>'''
+
+    def typenschild_motor_svg(a):
+        m = a["motor"]
+        _uid = a["kks"].replace(".", "_").replace("-", "_")
+        return f'''<svg viewBox="0 0 420 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:420px;height:auto">
+  <defs><linearGradient id="tm{_uid}" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" style="stop-color:#e4e6e8"/><stop offset="100%" style="stop-color:#a8acb0"/></linearGradient></defs>
+  <rect x="3" y="3" width="414" height="224" rx="4" fill="url(#tm{_uid})" stroke="#5a5e66" stroke-width="1"/>
+  <text x="34" y="30" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="18" font-weight="bold">{m["hersteller"]}</text>
+  <text x="386" y="30" text-anchor="end" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">3~Mot  {m["typ"]}</text>
+  <line x1="15" y1="40" x2="405" y2="40" stroke="#303038" stroke-width="1"/>
+  <text x="20" y="62" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">Nr. {a["serien"][:7]}-{a["baujahr"]}</text>
+  <text x="300" y="62" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">{m["ip"]} · Th.Cl. {m["isokl"]}</text>
+  <text x="20" y="90" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="13" font-weight="bold">{m["un"]}</text>
+  <text x="130" y="90" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="13" font-weight="bold">{m["i_n"]:.1f}&#160;A</text>
+  <text x="220" y="90" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="13" font-weight="bold">{m["pn"]:.1f}&#160;kW</text>
+  <text x="310" y="90" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="13" font-weight="bold">50&#160;Hz</text>
+  <text x="20" y="116" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">cos φ {m["cos"]:.2f}</text>
+  <text x="130" y="116" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">{m["n_n"]}&#160;1/min</text>
+  <text x="220" y="116" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">S1</text>
+  <text x="310" y="116" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12">BG {m["bg"]}</text>
+  <line x1="15" y1="130" x2="405" y2="130" stroke="#303038" stroke-width="0.8"/>
+  <rect x="20" y="142" width="46" height="26" rx="3" fill="#1a1a1a"/>
+  <text x="43" y="160" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="13" font-weight="bold">{m["ie"]}</text>
+  <text x="80" y="153" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="11">η 100 % · 75 % · 50 % Last</text>
+  <text x="80" y="168" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="12" font-weight="bold">{m["eta"][0]:.1f} · {m["eta"][1]:.1f} · {m["eta"][2]:.1f}&#160;%</text>
+  <line x1="15" y1="182" x2="405" y2="182" stroke="#303038" stroke-width="0.8"/>
+  <text x="20" y="204" fill="#1a1a1a" font-family="Arial,sans-serif" font-size="10">IEC/EN 60034 · Made in Germany</text>
+  <circle cx="400" cy="212" r="3.5" fill="#60646c"/><circle cx="20" cy="18" r="3.5" fill="#60646c"/>
+</svg>'''
+
+    def p_el(kks, n_par=1, h_geo=None):
+        """Elektrische Leistungsaufnahme einer Pumpe im Betriebspunkt [kW]."""
+        a = AGGREGATE[kks]
+        b = betriebspunkt(a["kl"], a["ort"], n_par, h_geo)
+        if not b["gefoerdert"]:
+            _q = 0.5 * q_end(a["kl"])
+            return 0.4 * a["rho"] * 9.81 * _q / 3600.0 * h_pumpe(a["kl"], _q) / eta_pumpe(a["kl"], _q) / a["eta_m"] / 1000.0
+        return a["rho"] * 9.81 * b["Q"] / 3600.0 * b["H"] / b["eta"] / a["eta_m"] / 1000.0
+
+    # --- Energieversorgung: Stromliefervertrag, Stromkennzeichnung, BHKW ---
+    # Vertragswerte sind Beispielwerte der Simulation und können hier angepasst werden.
+    STROM = dict(
+        lieferant="Stadtwerke Meckelberg GmbH", vertrag="Sondervertrag Gewerbe SV-G",
+        vertragsnr="SV-2026-04471", laufzeit="01.01.2026 – 31.12.2027",
+        arbeitspreise=[("Energiepreis (Arbeitspreis)", 10.30), ("Netzentgelt Mittelspannung (Arbeitspreis)", 4.60),
+                       ("Konzessionsabgabe (Sondervertragskunde)", 0.11),
+                       ("Umlagen (KWKG, Offshore-Netz, Aufschlag bes. Netznutzung)", 2.40),
+                       ("Stromsteuer (ermäßigt, Produzierendes Gewerbe)", 0.05)],
+        leistungspreis=96.0, grundpreis=480.0, mwst=19,
+        mix=[("Erneuerbare Energien, finanziert aus der EEG-Umlage", 58), ("Sonstige erneuerbare Energien", 14),
+             ("Erdgas", 13), ("Kohle", 12), ("Sonstige fossile Energieträger", 3), ("Kernkraft", 0)],
+        co2_g_kwh=285, rad_g_kwh=0.0000, stand_mix="Stromkennzeichnung gem. § 42 EnWG, Bezugsjahr 2025",
+        apw=dict(vertragsnr="SV-2026-04472", vertrag="Gewerbe Niederspannung (SLP)",
+                 lieferstelle="PW Talstraße (APW-03), Zähler APW03-EZ 01",
+                 arbeitspreise=[("Energiepreis (Arbeitspreis)", 11.20), ("Netzentgelt Niederspannung (Arbeitspreis)", 8.90),
+                                ("Konzessionsabgabe (Tarifkunde)", 1.32),
+                                ("Umlagen (KWKG, Offshore-Netz, Aufschlag bes. Netznutzung)", 2.40),
+                                ("Stromsteuer (ermäßigt, Produzierendes Gewerbe)", 0.05)],
+                 grundpreis=150.0),
+    )
+    BHKW = dict(bez="BHKW-Modul 1 (G10.1)", typ="Gas-Otto-Motor, 6 Zylinder, Faulgasbetrieb", p_el=125.0, eta_el=0.36,
+                eta_th=0.47, hu=6.4, ch4=62, baujahr=2014, gas_nenn=1000.0)
+    PV = dict(kwp=100.0, e_d=350.0)
+
+    pm = dict(
+        kennlinien=KENNLINIEN, standorte=STANDORTE, aggregate=AGGREGATE, p_el=p_el,
+        q_end=q_end, grenzen=grenzen, konfig=_pk, rs_q_p31=RS_Q_P31, rs_stufen=rs_stufen,
+        tagesgang=TAGESGANG, strom=STROM, bhkw=BHKW, pv=PV,
+        h_pumpe=h_pumpe, eta_pumpe=eta_pumpe, h_anlage=h_anlage, betriebspunkt=betriebspunkt,
+        rs_n_max=RS_N_MAX, rs_q_pumpe=RS_Q_PUMPE, tal=TAL, talstrasse_sim=talstrasse_sim,
+        typenschild_pumpe_svg=typenschild_pumpe_svg, typenschild_motor_svg=typenschild_motor_svg,
+    )
+    return (pm,)
+
+
+@app.cell
+def _(mo):
     # === PERSISTENTER ZUSTAND mit mo.state ===
     get_sim_state, set_sim_state = mo.state(None)
     return get_sim_state, set_sim_state
@@ -163,9 +677,9 @@ def _(mo):
 def _(
     abschlag_schwelle, btn_1h, btn_24h, btn_6h, btn_7d, btn_reset,
     faellmittel, get_sim_state,
-    mod_anammox, mod_faulturm, mod_intermit, mod_membran, mod_nh4_sensor,
+    mod_anammox, mod_intermit, mod_membran, mod_nh4_sensor,
     mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo,
-    np, o2_soll, regen_faktor, rs_verhaeltnis, set_sim_state,
+    np, o2_soll, pm, regen_faktor, rs_verhaeltnis, set_sim_state,
     temperatur, ues_menge, zulauf_q,
 ):
     # === SIMULATIONSMODELL MIT ZEITDYNAMIK ===
@@ -213,8 +727,15 @@ def _(
         ts = float(np.clip(3.5 + (300 - ctrl["ues_menge"]) * 0.005, 2.0, 6.0))
         t_ts = max(4.0, 25 - ctrl["ues_menge"] * 0.04)
 
+        # Rücklaufschlamm: Stufenschaltung P3.1–P3.6 (Kreiselpumpen ohne FU, je ca. 80 m³/h)
+        q_rs_soll = Q * ctrl["rs_verhaeltnis"]
+        q_rsp = ctrl.get("q_rs_pumpe", 80.0) * 24.0
+        n_rs = int(min(ctrl.get("n_rs_max", 6), max(1, round(q_rs_soll / max(q_rsp, 1.0)))))
+        Q_rs = ctrl.get("q_rs_p31", 80.0) * 24.0 + (n_rs - 1) * q_rsp
+        rv_ist = Q_rs / max(Q, 1.0)
+
         # Denitrifikation — intermittierende Belüftung verbessert Deni deutlich
-        deni_basis = min(0.90, 0.5 + ctrl["rs_verhaeltnis"] * 0.25)
+        deni_basis = min(0.90, 0.5 + rv_ist * 0.25)
         deni = min(0.95, deni_basis + 0.08) if mods.get("intermit") else deni_basis
 
         csb_bio = csb_vk * (1 - 0.85 * min(1.0, o2_eff * o2_faktor / 1.5))
@@ -259,8 +780,7 @@ def _(
             # Spurenstoffelimination (nicht direkt sichtbar, aber als Merkmal)
 
         ss_nk = float(np.clip(ts * isv / 1000 * 100, 20, 200))
-        Q_rs = Q * ctrl["rs_verhaeltnis"]
-        ts_rs = float(np.clip(ts * (1 + 1 / ctrl["rs_verhaeltnis"]) * 0.7, 5, 15))
+        ts_rs = float(np.clip(ts * (1 + 1 / rv_ist) * 0.7, 5, 15))
 
         csb_abschlag = csb_zu * 0.70
         afs_abschlag = afs_zu * 0.50
@@ -313,7 +833,7 @@ def _(
         ss_nk=0.03, nk_w=0.01, afs_ab=0.10,
         csb_ab=0.06, bsb_ab=0.08, nh4_ab=0.08, no3_ab=0.10,
         n_ab=0.07, p_ab=0.06, ph_ab=0.005,
-        Q_rs=0.05, ts_rs=0.02,
+        Q_rs=0.01, ts_rs=0.02,
         Q_roh=0.08, Q_abschlag=0.05,
         csb_abschlag=0.12, afs_abschlag=0.15, nh4_abschlag=0.10, p_abschlag=0.10,
     )
@@ -339,14 +859,14 @@ def _(
         spektral=mod_spektral.value, truebung=mod_truebung.value,
         membran=mod_membran.value, turbo=mod_turbo.value,
         intermit=mod_intermit.value, anammox=mod_anammox.value,
-        stufe4=mod_stufe4.value, faulturm=mod_faulturm.value, pv=mod_pv.value,
+        stufe4=mod_stufe4.value, pv=mod_pv.value,
     )
     ctrl = dict(
         o2_soll=o2_soll.value, rs_verhaeltnis=rs_verhaeltnis.value,
         ues_menge=ues_menge.value, faellmittel=faellmittel.value,
         zulauf_q=zulauf_q.value, regen_faktor=regen_faktor.value,
         temperatur=temperatur.value, abschlag_schwelle=abschlag_schwelle.value,
-        mods=mods,
+        mods=mods, q_rs_pumpe=pm["rs_q_pumpe"], n_rs_max=pm["rs_n_max"], q_rs_p31=pm["rs_q_p31"],
     )
     targets = calc_targets(ctrl)
 
@@ -423,22 +943,47 @@ def _(
     fr_p_zu = current["p_zu"] * Q / 1000
     fr_p_ab = current["p_ab"] * Q / 1000
 
-    # Energie mit Modifikationen
-    e_belueftung = Q * ctrl["o2_soll"] * 0.8 / 1000
+    # === ENERGIE (kWh/d) je Unterverteilung ===
+    # UV-2 Gebläsestation: spez. ca. 0,20 kWh/m³ bei O₂-Soll 2 mg/L
+    e_geblaese_ref = Q * 0.20 * (0.55 + 0.225 * ctrl["o2_soll"])
+    e_belueftung = e_geblaese_ref
     if mods["nh4_sensor"]: e_belueftung *= 0.75  # NH₄-geführt spart ~25%
     if mods["membran"]: e_belueftung *= 0.70  # besserer O₂-Transfer
     if mods["intermit"]: e_belueftung *= 0.85  # Belüftungspausen
     e_geblaese = e_belueftung
     if mods["turbo"]: e_geblaese *= 0.82  # ~18% effizienter als Drehkolben
-    e_pumpen = (Q + current["Q_rs"]) * 0.02
-    e_grundlast = 500
-    e_stufe4 = Q * 0.05 / 24 if mods["stufe4"] else 0  # GAK: ~0.05 kWh/m³
+    # UV-1 Zulauf/Hebewerk: P1.1 (gleiches Modell wie Pumpen-Tab) + Rechen, Sandfang
+    _qh = Q / 24
+    _zh = 6.5 + 0.8 + (_qh / 600) ** 2 * 2.5
+    _zeta = max(0.45, 0.72 - abs(_qh - _qh * 1.3 * 0.85) / max(1.0, _qh * 1.3) * 0.3)
+    p_hebewerk = _qh / 3600 * 9810 * _zh / _zeta / 1000 / 0.93
+    e_uv1 = p_hebewerk * 24 + 150
+    # UV-3 Biologie/NK: RS-Pumpwerk (Stufenschaltung), Rezirkulation P4.1, Rührwerke, Räumer, ÜS
+    n_rs_akt = pm["rs_stufen"](Q, ctrl["rs_verhaeltnis"])
+    p_rs = pm["p_el"]("P3.1") + (n_rs_akt - 1) * pm["p_el"]("P3.2")
+    p_rez = 2 * _qh / 3600 * 9810 * 0.4 / 0.65 / 1000 / 0.90
+    e_uv3 = (p_rs + p_rez) * 24 + 150
+    # UV-4 Schlammbehandlung: Umwälzpumpe Faulturm P10.1, Eindickung, Entwässerung, Dosierung
+    p_ft = pm["p_el"]("P10.1")
+    e_uv4 = p_ft * 24 + 200
+    # UV-5 Betriebsgebäude / Grundlast (Labor, EMSR, Beleuchtung, Werkstatt, Hilfsenergie Heizung)
+    e_uv5 = 450
+    e_stufe4 = Q * 0.05 if mods["stufe4"] else 0  # GAK: ~0,05 kWh/m³
     e_anammox = 30 if mods["anammox"] else 0  # Heizung + Mischer
-    e_gesamt = e_geblaese + e_pumpen + e_grundlast + e_stufe4 + e_anammox
+    e_pumpen = (p_hebewerk + p_rs + p_rez + p_ft) * 24
+    e_uv = dict(uv1=e_uv1, uv2=e_geblaese, uv3=e_uv3 + e_anammox, uv4=e_uv4, uv5=e_uv5, uv6=e_stufe4)
+    e_gesamt = sum(e_uv.values())
+    # Außenstation PW Talstraße (eigener Netzanschluss): P-001 + Nebenverbraucher 1,2 kW
+    _q_tal = pm["betriebspunkt"](pm["aggregate"]["P-001"]["kl"], "APW03")["Q"]
+    _qroh_24 = float(np.mean([p.get("Q_roh", Q) for p in history[-24:]])) if history else Q
+    _lauf_tal = min(1.0, pm["tal"]["q_tw"] * _qroh_24 / 12000.0 / max(1.0, _q_tal))
+    e_apw03 = pm["p_el"]("P-001") * 24 * _lauf_tal + 1.2 * 24
 
-    # Energieerzeugung
-    e_bhkw = Q * 0.04 if mods["faulturm"] else 0  # ~40% Eigenversorgung
-    e_pv = 350 if mods["pv"] else 0  # ~350 kWh/d bei 100 kWp
+    # Energieerzeugung: BHKW (Faulgas, Bestand) + PV (Modifikation)
+    _lf = current["csb_zu"] * Q / (600.0 * 12000.0)
+    gas_nm3 = pm["bhkw"]["gas_nenn"] * _lf
+    e_bhkw = min(gas_nm3 * pm["bhkw"]["hu"] * pm["bhkw"]["eta_el"], pm["bhkw"]["p_el"] * 24)
+    e_pv = pm["pv"]["e_d"] if mods["pv"] else 0
     e_erzeugung = e_bhkw + e_pv
     e_netto = e_gesamt - e_erzeugung
 
@@ -457,6 +1002,9 @@ def _(
     if current["ts"] > 5.0: alarme.append(("⚠️", f"TS Belebung: {current['ts']:.1f} > 5.0 g/L"))
     if current["isv"] > 150: alarme.append(("⚠️", f"ISV: {current['isv']:.0f} mL/g – Blähschlammgefahr"))
     if current.get("Q_abschlag", 0) > 10: alarme.append(("🚨", f"ABSCHLAG aktiv: {current['Q_abschlag']:.0f} m³/d in Vorfluter (nur mech. gereinigt)"))
+    _rs_kap = pm["rs_n_max"] * pm["rs_q_pumpe"] * 24
+    if Q * rs_verhaeltnis.value > _rs_kap * 1.04:
+        alarme.append(("⚠️", f"RS-Pumpwerk an Förderkapazität: alle {pm['rs_n_max']} Pumpen in Betrieb ({_rs_kap:.0f} m³/d)"))
 
     # State speichern
     set_sim_state({
@@ -471,6 +1019,8 @@ def _(
         "mods": mods, "e_gesamt": e_gesamt, "e_erzeugung": e_erzeugung,
         "e_netto": e_netto, "e_geblaese": e_geblaese, "e_pumpen": e_pumpen,
         "e_stufe4": e_stufe4, "e_bhkw": e_bhkw, "e_pv": e_pv,
+        "e_uv": e_uv, "e_apw03": e_apw03, "e_geblaese_ref": e_geblaese_ref, "gas_nm3": gas_nm3,
+        "p_hebewerk": p_hebewerk, "p_rs": p_rs, "p_rez": p_rez, "p_ft": p_ft,
         "fm_kosten": fm_kosten,
     })
     return
@@ -483,9 +1033,11 @@ def _(
     armatur_auswahl, wartung_btn,
     faellmittel, get_sim_state,
     lab_analyse_btn, lab_kal_btn, lab_show_isv, lab_show_proto, lab_show_qs, lab_woche_btn,
-    mod_anammox, mod_faulturm, mod_intermit, mod_membran, mod_nh4_sensor,
+    mod_anammox, mod_intermit, mod_membran, mod_nh4_sensor,
     mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo,
-    mo, np, o2_soll,
+    mo, np, o2_soll, pm, get_pk, kf_meldung,
+    kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+    kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn,
     regen_faktor, rs_verhaeltnis, temperatur,
     ues_menge, zulauf_q,
 ):
@@ -609,7 +1161,7 @@ def _(
                     vr("Verbrauch brutto", f"{st.get('e_gesamt', st['energie']):.0f}", "kWh/d")
                     + vr("Erzeugung", f"{st.get('e_erzeugung', 0):.0f}", "kWh/d")
                     + vr("Netto", f"{st['energie']:.0f}", "kWh/d")
-                    + vr("spez. Verbrauch", f"{st['energie']/max(1,c['Q_zu'])*1000:.1f}", "Wh/m³")
+                    + vr("spez. Verbrauch", f"{st.get('e_gesamt', 0) * 365 / 50000:.1f}", "kWh/(EW·a)")
                     + vr("Temperatur", f"{c['T']:.1f}", "°C", wl=10, dl=8)
                     + vr("Modifikationen", f"{sum(1 for v in st.get('mods', dict()).values() if v)}", "aktiv")
                 )}
@@ -849,9 +1401,10 @@ def _(
         geblaese_luft = c["Q_zu"] * o2_val * 1.5 / 24  # Nm³/h, vereinfacht
         geblaese_p = geblaese_luft * 0.5 * 0.04  # kW, vereinfacht
 
-        # RS-Pumpe aus Verhältnis
-        rs_q = c["Q_zu"] / 24 * rs_verhaeltnis.value
-        rs_fu_hz = min(50, max(25, 50 * rs_verhaeltnis.value / 1.0))
+        # RS-Pumpwerk aus Verhältnis (Stufenschaltung P3.1–P3.6)
+        rs_q_soll = tgt["Q_zu"] / 24 * rs_verhaeltnis.value
+        rs_n_ein = pm["rs_stufen"](tgt["Q_zu"], rs_verhaeltnis.value)
+        rs_q = c["Q_rs"] / 24
 
         # ÜS aus Menge
         ues_q_h = ues_menge.value / 24
@@ -903,13 +1456,16 @@ def _(
                         und bei O₂ > 3 mg/L verschlechterte Denitrifikation (ISV steigt).</p>
                     </div>
                 </div>'''),
-                "💡 RS-Verhältnis → Rücklaufschlammpumpe P3.1": mo.Html(f'''<div class="pls" style="font-size:0.85em">
+                "💡 RS-Verhältnis → Rücklaufschlammpumpen P3.1–P3.6": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <p>Das RS-Verhältnis bestimmt den Volumenstrom der
-                        <strong>KSB Sewatec RS-Pumpe</strong> (FU-geregelt).</p>
+                        <p>Das RS-Verhältnis ist der Sollwert für das <strong>RS-Pumpwerk</strong>
+                        (6 × KSB Sewabloc F 100-252, Festdrehzahl ohne FU). Die Steuerung schaltet
+                        so viele Pumpen zu, dass der Sollwert möglichst genau erreicht wird (Stufenschaltung).</p>
                         {vtbl(
-                            vr("RS-Förderstrom Q", f"{rs_q:.0f}", "m³/h")
-                            + vr("FU-Frequenz", f"{rs_fu_hz:.0f}", "Hz")
+                            vr("RS-Sollwert", f"{rs_q_soll:.0f}", "m³/h")
+                            + vr("Pumpen in Betrieb", f"{rs_n_ein} von {pm['rs_n_max']}", "")
+                            + vr("RS-Förderstrom FI 402", f"{rs_q:.0f}", "m³/h")
+                            + vr("RS-Verhältnis Ist", f"{c['Q_rs'] / max(1, c['Q_zu']):.2f}", "-")
                             + vr("TS Rücklaufschlamm", f"{c['ts_rs']:.1f}", "g/L")
                         )}
                         <p>Höheres RS-Verhältnis → bessere Denitrifikation (mehr NO₃-Rückführung),
@@ -990,17 +1546,10 @@ def _(
         zp_P = zp_Q_ist / 3600 * 9810 * zp_H_ist / zp_eta / 1000 if zp_eta > 0 else 0  # kW
         zp_f = min(50, max(25, 50 * zp_Q_ist / (zp_Q_nenn * 0.85)))  # Hz (FU-geregelt)
         zp_bh = 14280 + th  # Betriebsstunden
+        zp_U = 400.0 * zp_f / 50.0  # FU-Ausgangsspannung (U/f-Kennlinie)
+        zp_cos = 0.84
+        zp_I = zp_P / 0.93 * 1000 / (3 ** 0.5 * zp_U * zp_cos)  # Motorstrom [A], η_Motor 93 %
 
-        # Rücklaufschlammpumpen: 2 Stück, Typ: Propellerpumpe / Kreiselpumpe
-        rsp_Q_nenn = Q_rs_h * 1.2
-        rsp_Q_ist = Q_rs_h
-        rsp_H_geo = 1.5
-        rsp_H_verl = 0.3 + (rsp_Q_ist / 500) ** 2 * 1.8
-        rsp_H_ist = rsp_H_geo + rsp_H_verl
-        rsp_eta = max(0.50, 0.75 - abs(rsp_Q_ist - rsp_Q_nenn * 0.85) / max(1, rsp_Q_nenn) * 0.25)
-        rsp_P = rsp_Q_ist / 3600 * 9810 * rsp_H_ist / rsp_eta / 1000 if rsp_eta > 0 else 0
-        rsp_f = min(50, max(25, 50 * rsp_Q_ist / max(1, rsp_Q_nenn * 0.85)))
-        rsp_bh = 12450 + th
 
         # Interne Rezirkulation (Denizone → Nitrifikation)
         irez_Q_ist = Q_h * 2.0  # ca. 2× Qzu
@@ -1010,6 +1559,9 @@ def _(
         irez_P = irez_Q_ist / 3600 * 9810 * irez_H_ist / irez_eta / 1000 if irez_eta > 0 else 0
         irez_f = min(50, max(30, 50 * irez_Q_ist / max(1, irez_Q_nenn * 0.85)))
         irez_bh = 11800 + th
+        irez_U = 400.0 * irez_f / 50.0
+        irez_cos = 0.78
+        irez_I = irez_P / 0.90 * 1000 / (3 ** 0.5 * irez_U * irez_cos)  # η_Motor 90 %
 
         # SVG-Pumpenkennlinie Generator (Kreiselpumpe)
         def pump_curve_svg(Q_nenn, H_nenn, Q_ist, H_ist, eta_ist, title, width=380, height=220):
@@ -1200,6 +1752,162 @@ def _(
                 <text x="220" y="94" fill="#dfe6e9" font-size="9" font-family="monospace">P = {P_val:.2f} kW</text>
             </svg>'''
 
+        # --- Pumpen mit KSB-Kennlinien (Betriebspunkt über Anlagenkennlinie, Pumpenmodell-Zelle) ---
+        lp_agg = pm["aggregate"]
+        lp_rng = np.random.default_rng(int(th * 13) + 7)
+
+        def lp_mess(kks, laeuft, h_zulauf, n_par=1, h_geo=None):
+            """Messwerte FI/PI einer Pumpe: Drücke auf Höhe Pumpenachse, h_zulauf in m."""
+            a = lp_agg[kks]
+            rho = a["rho"]
+            p_s = rho * 9.81 * h_zulauf / 1e5
+            if laeuft:
+                b = pm["betriebspunkt"](a["kl"], a["ort"], n_par, h_geo)
+                q = b["Q"] * (1 + lp_rng.normal(0, 0.004))
+                p_d = p_s + rho * 9.81 * b["H"] / 1e5
+            else:
+                q, p_d = 0.0, p_s
+            warn = ""
+            if laeuft:
+                _qmin, _qmax = pm["grenzen"](a["kl"])
+                if not b["gefoerdert"]:
+                    warn = "Pumpe läuft, kein Durchfluss – Förderhöhe reicht nicht aus"
+                elif _qmin and q < _qmin:
+                    warn = "Förderstrom unter Mindestförderstrom lt. Hersteller"
+                elif _qmax and q > _qmax:
+                    warn = "Förderstrom über Maximalförderstrom lt. Hersteller"
+            return dict(q=q, p_s=p_s + lp_rng.normal(0, 0.003), p_d=p_d + lp_rng.normal(0, 0.003), warn=warn)
+
+        def lp_status(on, bereit=True):
+            if on:
+                return '<span style="color:#00b894;font-weight:bold">● EIN</span>'
+            if bereit:
+                return '<span style="color:#fdcb6e">◐ BEREIT</span>'
+            return '<span style="color:#636e72">○ AUS</span>'
+
+        def lp_datenblatt(a, messort):
+            mt = a["motor"]
+            zeilen = [
+                ("Baureihe / Größe", "KSB " + a["kl"][0]),
+                ("Laufrad-Ø / Nenndrehzahl", f"{a['kl'][1]} mm / {a['n_nenn']} 1/min"),
+                ("Fördermedium", a["medium"]),
+                ("Dichte Fördermedium", f"{a['rho']:.0f} kg/m³"),
+                ("Temperatur Fördermedium", a["t_med"] + " °C"),
+                ("Auslegungspunkt Q / H", f"{a['ausl_q']:.0f} m³/h / {a['ausl_h']:.1f} m"),
+                ("Aufstellung", "trocken, horizontal, Blockbauweise"),
+                ("Antrieb", f"{mt['hersteller']} {mt['typ']}, {mt['pn']:.1f} kW, {mt['ie']}, Anlauf {a['anlauf']}"
+                            + (" (Frequenzumrichter)" if a["fu"] else "")),
+                ("Druckmessstellen (anlagenseitig)", messort),
+            ]
+            trs = ""
+            for _j, (_kk, _vv) in enumerate(zeilen):
+                _bg = "#f5f0d8" if _j % 2 else "transparent"
+                trs += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820;width:42%">{_kk}</td>'
+                        f'<td style="padding:4px 12px;font-weight:bold;color:#1a1a2e">{_vv}</td></tr>')
+            return (f'<div style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820;border-radius:6px;padding:10px;margin-top:6px">'
+                    f'<div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">KSB · DATENBLATT (AUSZUG) · Kom.-Nr. {a["serien"][:7]}</div>'
+                    f'<table style="border-collapse:collapse;font-size:0.85em;margin-top:6px">{trs}</table></div>')
+
+        def lp_details(a, messort):
+            return (f'<details style="margin-top:8px"><summary style="cursor:pointer;color:#74b9ff;font-size:0.85em">'
+                    f'Typenschilder Pumpe / Motor ({a["kks"]})</summary>'
+                    f'<div class="pls-g2" style="margin-top:6px"><div>{pm["typenschild_pumpe_svg"](a)}</div>'
+                    f'<div>{pm["typenschild_motor_svg"](a)}</div></div></details>'
+                    f'<details style="margin-top:4px"><summary style="cursor:pointer;color:#74b9ff;font-size:0.85em">'
+                    f'Datenblatt (Auszug Herstellerunterlagen)</summary>{lp_datenblatt(a, messort)}</details>')
+
+        def lp_faceplate(kks, mess, on, bh, lz, sp, messort, bereit=True, q_fi=None):
+            a = lp_agg[kks]
+            _q_anz = mess["q"] if q_fi is None else q_fi
+            _fu_row = vr("Drehzahl (FU)", f"{a['kl'][2]} 1/min / {a['kl'][2] / a['n_nenn'] * 50:.1f}", "Hz") if a["fu"] else ""
+            tab = vtbl(
+                vr(f"{a['fi_bez']} {a['fi']}", f"{_q_anz:.1f}", "m³/h")
+                + _fu_row
+                + vr(f"Druck saugseitig {a['pi_s']}", f"{mess['p_s']:.2f}", "bar")
+                + vr(f"Druck druckseitig {a['pi_d']}", f"{mess['p_d']:.2f}", "bar")
+                + vr("Betriebsstunden", f"{bh:.0f}", "h")
+                + vr("Laufzeit Vortag", f"{lz:.1f}", "h")
+                + vr("Schaltspiele Vortag", f"{sp}", "")
+            )
+            return (f'<div class="pls-c"><h3>{kks} {a["bez"]} {lp_status(on, bereit)}</h3>'
+                    f'<p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">KSB {a["kl"][0]} · Laufrad ø{a["kl"][1]} mm · '
+                    f'Motor {a["motor"]["pn"]:.1f} kW · '
+                    + ("drehzahlgeregelt über Frequenzumrichter" if a["fu"] else f'Anlauf {a["anlauf"]} · Festdrehzahl, ohne Frequenzumrichter')
+                    + (f' · {a["umbau"]}' if a["umbau"] else "") + '</p>'
+                    + (f'<div class="pls-alarm">⚠️ Meldung: {mess["warn"]}</div>' if mess.get("warn") else "")
+                    + f'{tab}{lp_details(a, messort)}</div>')
+
+        # --- Rücklaufschlamm-Pumpwerk P3.1–P3.6 ---
+        rs_n_ein = pm["rs_stufen"](tgt["Q_zu"], rs_verhaeltnis.value)
+        rs_rows = ""
+        rs_q_sum = 0.0
+        for _i in range(pm["rs_n_max"]):
+            _k = f"P3.{_i + 1}"
+            _a = lp_agg[_k]
+            _on = _i < rs_n_ein
+            _m = lp_mess(_k, _on, 2.20)
+            rs_q_sum += _m["q"]
+            _bh = _a["bh0"] + (th if _on else 0.0)
+            _td = 'style="padding:5px 14px;text-align:right;white-space:nowrap"'
+            rs_rows += (f'<tr style="border-bottom:1px solid #0f3460">'
+                        f'<td style="padding:5px 14px;white-space:nowrap">{_k}</td>'
+                        f'<td style="padding:5px 14px;text-align:center;white-space:nowrap">{lp_status(_on)}'
+                        f'{(" · FU " + str(_a["kl"][2])) if _a["fu"] else ""}{" ⚠️" if _m.get("warn") else ""}</td>'
+                        f'<td {_td}><span style="color:#b2bec3">{_a["fi"]}</span>&ensp;<b style="color:#74b9ff">{_m["q"]:.1f}</b>&ensp;m³/h</td>'
+                        f'<td {_td}><span style="color:#b2bec3">{_a["pi_s"]}</span>&ensp;<b style="color:#74b9ff">{_m["p_s"]:.2f}</b>&ensp;bar</td>'
+                        f'<td {_td}><span style="color:#b2bec3">{_a["pi_d"]}</span>&ensp;<b style="color:#74b9ff">{_m["p_d"]:.2f}</b>&ensp;bar</td>'
+                        f'<td {_td}>{_bh:.0f}&ensp;h</td>'
+                        f'<td {_td}>{(24.0 if _on else 0.0):.1f}&ensp;h</td></tr>')
+        rs_th_style = 'style="padding:8px 14px;color:#74b9ff;text-align:right;white-space:nowrap"'
+        if lp_agg["P3.1"]["kl"][:2] == lp_agg["P3.2"]["kl"][:2] and not lp_agg["P3.1"]["fu"]:
+            rs_titel = f"6 × KSB {lp_agg['P3.2']['kl'][0]}"
+        else:
+            rs_titel = f"P3.1: KSB {lp_agg['P3.1']['kl'][0]} · P3.2–P3.6: KSB {lp_agg['P3.2']['kl'][0]}"
+        rs_block_html = f'''<div class="pls-c" style="margin-top:10px">
+            <h3>Rücklaufschlamm-Pumpwerk P3.1 – P3.6 ({rs_titel})</h3>
+            <p style="font-size:0.8em;color:#b2bec3;margin:0 0 8px">Trocken aufgestellt neben NK1/NK2 · Pumpen ohne FU mit Festdrehzahl (Stern-Dreieck-Anlauf) ·
+               jede Pumpe fördert über eine eigene Druckleitung DN 125 mit freiem Auslauf in das Verteilerbauwerk vor dem Belebungsbecken ·
+               Stufenschaltung nach RS-Sollwert</p>
+            <table style="border-collapse:collapse;font-size:0.86em;color:#ffffff;background:#16213e">
+                <tr style="border-bottom:2px solid #0f3460;background:#0f1a30">
+                    <th style="padding:8px 14px;color:#74b9ff;text-align:left">Pumpe</th>
+                    <th style="padding:8px 14px;color:#74b9ff;text-align:center">Status</th>
+                    <th {rs_th_style}>Förderstrom</th><th {rs_th_style}>Druck saugseitig</th><th {rs_th_style}>Druck druckseitig</th>
+                    <th {rs_th_style}>Betriebsstunden</th><th {rs_th_style}>Laufzeit Vortag</th>
+                </tr>
+                {rs_rows}
+            </table>
+            {vtbl(
+                vr("Summe Rücklaufschlamm FI 402", f"{c['Q_rs'] / 24:.0f}", "m³/h")
+                + vr("RS-Sollwert (RS-Verhältnis × Q_zu)", f"{tgt['Q_zu'] / 24 * rs_verhaeltnis.value:.0f}", "m³/h")
+                + vr("Pumpen in Betrieb", f"{rs_n_ein} von {pm['rs_n_max']}", "")
+                + vr("TS Rücklaufschlamm", f"{c['ts_rs']:.1f}", "g/L")
+            )}
+            {lp_details(lp_agg["P3.1"], "PI 421–426 saugseitig, PI 431–436 druckseitig; Saug- und Druckleitung je DN 125, Messstellen auf Höhe Pumpenachse")}
+            {lp_details(lp_agg["P3.2"], "PI 421–426 saugseitig, PI 431–436 druckseitig; Saug- und Druckleitung je DN 125, Messstellen auf Höhe Pumpenachse") if lp_agg["P3.1"]["kl"][:2] != lp_agg["P3.2"]["kl"][:2] else ""}
+        </div>'''
+
+        # --- Faulturm FT-1: Umwälzpumpen P10.1 / P10.2 ---
+        ft_m1 = lp_mess("P10.1", True, 18.0)
+        ft_m2 = lp_mess("P10.2", False, 18.0)
+        ft_messort = "Saug- und Druckleitung je DN 125, Messstellen auf Höhe Pumpenachse"
+        ft_temp = 37.0 + 0.3 * np.sin(th / 7.0)
+        ft_gas = st.get("gas_nm3", 1000.0) / 24
+        ft_block_html = f'''<div class="pls-c" style="margin-top:10px">
+            <h3>Faulturm FT-1 – Umwälzung / Beheizung (Umwälzkreis über Wärmetauscher W10.1)</h3>
+            <p style="font-size:0.8em;color:#b2bec3;margin:0 0 8px">Mesophiler Faulturm, Nutzvolumen 2.200 m³ ·
+               Umwälzpumpen im Dauerbetrieb, Wechsel nur bei Störung · geschlossener Kreislauf Faulturm → W10.1 → Faulturm</p>
+            {vtbl(
+                vr("Temperatur Faulturm TI 606", f"{ft_temp:.1f}", "°C")
+                + vr("Füllstand Faulturm LI 607", "96", "%")
+                + vr("Faulgas FI 608", f"{ft_gas:.0f}", "Nm³/h")
+            )}
+        </div>
+        <div class="pls-g2">
+            {lp_faceplate("P10.1", ft_m1, True, lp_agg["P10.1"]["bh0"] + th, 24.0, 0, "PI 602 saugseitig, PI 603 druckseitig; " + ft_messort)}
+            {lp_faceplate("P10.2", ft_m2, False, lp_agg["P10.2"]["bh0"], 0.0, 0, "PI 604 saugseitig, PI 605 druckseitig; " + ft_messort, q_fi=ft_m1["q"])}
+        </div>'''
+
         pumpen_html = mo.Html(f'''<div class="pls">
 
         <!-- KREISELPUMPEN -->
@@ -1213,7 +1921,10 @@ def _(
                     vr("Förderstrom Q", f"{zp_Q_ist:.0f}", "m³/h")
                     + vr("Förderhöhe H", f"{zp_H_ist:.1f}", "m")
                     + vr("Drehzahl (FU)", f"{zp_f:.0f}", "Hz")
-                    + vr("Leistung P₁", f"{zp_P:.1f}", "kW")
+                    + vr("Motorstrom I (FU)", f"{zp_I:.1f}", "A")
+                    + vr("Motorspannung U (FU)", f"{zp_U:.0f}", "V")
+                    + vr("Leistungsfaktor cos φ (FU)", f"{zp_cos:.2f}", "")
+                    + vr("Motorwirkungsgrad (Datenblatt)", "93", "%")
                     + vr("Wirkungsgrad η", f"{zp_eta*100:.0f}", "%", wl=60, dl=50)
                     + vr("Betriebsstunden", f"{zp_bh:.0f}", "h")
                     + vr("Nenn-Q / Nenn-H", f"{zp_Q_nenn:.0f} / {zp_H_nenn:.0f}", "m³/h / m")
@@ -1243,7 +1954,10 @@ def _(
                     vr("Förderstrom Q", f"{irez_Q_ist:.0f}", "m³/h")
                     + vr("Förderhöhe H", f"{irez_H_ist:.1f}", "m")
                     + vr("Drehzahl (FU)", f"{irez_f:.0f}", "Hz")
-                    + vr("Leistung P₁", f"{irez_P:.2f}", "kW")
+                    + vr("Motorstrom I (FU)", f"{irez_I:.1f}", "A")
+                    + vr("Motorspannung U (FU)", f"{irez_U:.0f}", "V")
+                    + vr("Leistungsfaktor cos φ (FU)", f"{irez_cos:.2f}", "")
+                    + vr("Motorwirkungsgrad (Datenblatt)", "90", "%")
                     + vr("Wirkungsgrad η", f"{irez_eta*100:.0f}", "%")
                     + vr("Betriebsstunden", f"{irez_bh:.0f}", "h")
                     + vr("Rez.-Verhältnis", f"{irez_Q_ist/max(1,Q_h):.1f}", "× Q_zu")
@@ -1251,33 +1965,8 @@ def _(
             </div>
         </div>
 
-        <div class="pls-g2">
-            <div class="pls-c">
-                <h3>RS-Pumpe P3.1 (Betrieb) {pump_status(True)}</h3>
-                <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">KSB Sewatec – Kreiselpumpe, FU-geregelt</p>
-                {vtbl(
-                    vr("Förderstrom Q", f"{rsp_Q_ist:.0f}", "m³/h")
-                    + vr("Förderhöhe H", f"{rsp_H_ist:.1f}", "m")
-                    + vr("Drehzahl (FU)", f"{rsp_f:.0f}", "Hz")
-                    + vr("Leistung P₁", f"{rsp_P:.1f}", "kW")
-                    + vr("Wirkungsgrad η", f"{rsp_eta*100:.0f}", "%", wl=60, dl=50)
-                    + vr("TS Rücklaufschlamm", f"{c['ts_rs']:.1f}", "g/L")
-                    + vr("Betriebsstunden", f"{rsp_bh:.0f}", "h")
-                    + vr("RS-Verhältnis", f"{rs_verhaeltnis.value:.2f}", "-")
-                )}
-                {pump_curve_svg(rsp_Q_nenn, 4.0, rsp_Q_ist, rsp_H_ist, rsp_eta, "RS-Pumpe P3.1")}
-            </div>
-            <div class="pls-c">
-                <h3>RS-Pumpe P3.2 (Reserve) {pump_status_reserve()}</h3>
-                <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">KSB Sewatec – Kreiselpumpe, FU-geregelt</p>
-                {vtbl(
-                    vr("Status", "Standby", "")
-                    + vr("Nenn-Q / Nenn-H", f"{rsp_Q_nenn:.0f} / 4.0", "m³/h / m")
-                    + vr("Betriebsstunden", f"{rsp_bh - 1800:.0f}", "h")
-                )}
-                {pump_curve_svg(rsp_Q_nenn, 4.0, 0, rsp_H_ist*0.65, 0, "RS-Pumpe P3.2 (Reserve)")}
-            </div>
-        </div>
+        {rs_block_html}
+        {ft_block_html}
 
         <!-- EXZENTERSCHNECKENPUMPEN -->
         <div class="pls-c" style="margin-top:15px"><h3>🟣 Exzenterschneckenpumpen</h3></div>
@@ -1382,13 +2071,14 @@ def _(
                     <th style="padding:8px 16px;color:#74b9ff;text-align:left">Pumpe</th>
                     <th style="padding:8px 16px;color:#74b9ff;text-align:left">Typ</th>
                     <th style="padding:8px 16px;color:#74b9ff;text-align:right">Q</th>
-                    <th style="padding:8px 16px;color:#74b9ff;text-align:right">P [kW]</th>
+                    <th style="padding:8px 16px;color:#74b9ff;text-align:right">P [kW] / I [A]</th>
                     <th style="padding:8px 16px;color:#74b9ff;text-align:center">Status</th>
                 </tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P1.1 Zulauf</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">{zp_Q_ist:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{zp_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P1.1 Zulauf</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">{zp_Q_ist:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{zp_I:.1f}&ensp;A</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P1.2 Zulauf</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status_reserve()}</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P3.1 RS</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">{rsp_Q_ist:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{rsp_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P3.2 RS</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status_reserve()}</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P3.1–3.6 RS</td><td style="padding:5px 16px">Kreiselpumpe (6×)</td><td style="text-align:right;padding:5px 16px">{rs_q_sum:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px"><span style="color:#00b894;font-weight:bold">● {rs_n_ein}/{pm['rs_n_max']} EIN</span></td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P10.1 Umwälz. FT</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">{ft_m1['q']:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P10.2 Umwälz. FT</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status_reserve()}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P4.1 Rez.</td><td style="padding:5px 16px">Propellerpumpe</td><td style="text-align:right;padding:5px 16px">{irez_Q_ist:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{irez_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P2.1 PS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ps_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ps_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P5.1 ÜS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ues_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ues_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
@@ -1396,8 +2086,8 @@ def _(
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P7.1 Fe³⁺</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{fm_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{fm_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(fm_Q > 0)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P8.1 Poly</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{poly_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{poly_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(poly_Q > 0.5)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P9.1 Kalk</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{kalk_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{kalk_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(kalk_aktiv)}</td></tr>
-                <tr style="border-top:2px solid #74b9ff"><td colspan="3" style="padding:6px 16px;font-weight:bold;color:#74b9ff">Σ Pumpenleistung</td>
-                    <td style="text-align:right;padding:6px 16px;font-weight:bold;color:#74b9ff">{zp_P + rsp_P + irez_P + ps_P + ues_P + ds_P + fm_P + poly_P + kalk_P:.1f}</td>
+                <tr style="border-top:2px solid #74b9ff"><td colspan="3" style="padding:6px 16px;font-weight:bold;color:#74b9ff">Σ angezeigte Leistungen [kW]</td>
+                    <td style="text-align:right;padding:6px 16px;font-weight:bold;color:#74b9ff">{ps_P + ues_P + ds_P + fm_P + poly_P + kalk_P:.1f}</td>
                     <td></td></tr>
             </table>
         </div>
@@ -1411,8 +2101,8 @@ def _(
         _tage = np.arange(56)
 
         # --- P1.1 Zulaufpumpe: leichter Lagerverschleiß ---
-        p11_strom = zp_P * np.ones(56) + np.random.normal(0, zp_P * 0.03, 56) + _tage * 0.003
-        p11_strom[-7:] += 0.15
+        p11_strom = zp_I * np.ones(56) + np.random.normal(0, zp_I * 0.03, 56) + _tage * 0.006
+        p11_strom[-7:] += 0.3
         p11_flow = zp_Q_ist * 1.02 * np.ones(56) + np.random.normal(0, zp_Q_ist * 0.04, 56) - _tage * 0.02
         p11_vib = 2.5 + np.random.normal(0, 0.3, 56) + _tage * 0.015
         p11_vib[-5:] += np.array([0.3, 0.5, 0.2, 0.8, 0.6])
@@ -1421,12 +2111,12 @@ def _(
 
         if detail_p11.value:
             fig11 = _mp(rows=2, cols=2,
-                subplot_titles=("Stromaufnahme P₁ [kW]", "Förderstrom Q [m³/h]",
+                subplot_titles=("Stromaufnahme I [A]", "Förderstrom Q [m³/h]",
                                 "Vibration [mm/s]", "Lagertemperatur [°C]"),
                 vertical_spacing=0.18, horizontal_spacing=0.10)
             fig11.add_trace(_go.Scatter(x=_tage, y=p11_strom, mode='lines+markers',
                 line=dict(color='#0984e3', width=1.5), marker=dict(size=3)), row=1, col=1)
-            fig11.add_hline(y=zp_P*1.15, line_dash="dash", line_color="#e17055", row=1, col=1,
+            fig11.add_hline(y=zp_I*1.15, line_dash="dash", line_color="#e17055", row=1, col=1,
                 annotation_text="Warn", annotation_font_color="#e17055", annotation_font_size=9)
             _z1 = np.polyfit(_tage, p11_strom, 1)
             fig11.add_trace(_go.Scatter(x=_tage, y=np.polyval(_z1, _tage), mode='lines',
@@ -1586,7 +2276,7 @@ def _(
                 </p>
                 <p style="font-size:0.85em;margin:6px 0">
                     <strong>Bezug zur Kläranlage:</strong> Genau so werden die Kennlinien der Zulaufpumpen
-                    P1.1/P1.2 und RS-Pumpen P3.1/P3.2 im Rahmen der Inbetriebnahme und bei
+                    P1.1/P1.2 und RS-Pumpen P3.1–P3.6 im Rahmen der Inbetriebnahme und bei
                     Wartungsprüfungen aufgenommen. Ein Vergleich mit der Werkskennlinie zeigt
                     Verschleiß an Laufrad oder Gehäuse.
                 </p>
@@ -1676,7 +2366,7 @@ def _(
                 <tr style="border-bottom:2px solid #0f3460;background:#0f1a30"><th style="padding:8px 16px;color:#74b9ff;text-align:left">Regelkreis</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Regelgröße</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Stellglied</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Reglertyp</th></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Zulauf-Füllstand</td><td style="padding:5px 16px">Wasserstand Pumpensumpf</td><td style="padding:5px 16px">P1.1 Zulaufpumpe (FU)</td><td style="padding:5px 16px">PI</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">O₂-Regelung BB</td><td style="padding:5px 16px">O₂-Gehalt [mg/L]</td><td style="padding:5px 16px">Gebläse / Belüfter</td><td style="padding:5px 16px">PID</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">RS-Regelung</td><td style="padding:5px 16px">Schlammschicht NK [cm]</td><td style="padding:5px 16px">P3.1 RS-Pumpe (FU)</td><td style="padding:5px 16px">PI</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">RS-Regelung</td><td style="padding:5px 16px">Schlammschicht NK [cm]</td><td style="padding:5px 16px">P3.1–P3.6 RS-Pumpen (Stufenschaltung)</td><td style="padding:5px 16px">Mehrpunkt</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P-Elimination</td><td style="padding:5px 16px">P-ges Ablauf [mg/L]</td><td style="padding:5px 16px">P7.1 Fällmittel-KMP</td><td style="padding:5px 16px">PI + Totzeit</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">pH-Korrektur</td><td style="padding:5px 16px">pH Ablauf [-]</td><td style="padding:5px 16px">P9.1 Kalkmilch-KMP</td><td style="padding:5px 16px">Zweipunkt</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Polymer-Dosierung</td><td style="padding:5px 16px">TS Filtrat [mg/L]</td><td style="padding:5px 16px">P8.1 Polymer-KMP</td><td style="padding:5px 16px">Festwert</td></tr>
@@ -1726,14 +2416,10 @@ def _(
                 "icon": "🟣", "color": "#a29bfe",
                 "tech": "Granulierte Aktivkohle (GAK) als Festbettfilter nach der NK. Eliminiert Spurenstoffe (Arzneimittel, Pestizide, PFAS), reduziert CSB/BSB zusätzlich um ~45%. Pflicht ab 2035 (EU-Kommunalabwasser-RL) für KA >100.000 EW, ab 2040 für >10.000 EW.",
                 "wirkung": "CSB-Ablauf sinkt um ~45%, BSB um ~35%. Spurenstoffelimination >80%. Erhöhter Energiebedarf (~0.05 kWh/m³) und GAK-Kosten. Amortisation durch mögliche Abwasserabgabe-Erstattung."},
-            "faulturm": {"name": "Faulturm + BHKW", "kat": "Umbau", "inv": 1500000, "betr": 40000,
-                "icon": "🟣", "color": "#a29bfe",
-                "tech": "Mesophiler Faulturm (37°C, HRT ~20 d) für Primär- und Überschussschlamm. Biogas → BHKW (Gasmotor, η_el ~38%, η_th ~45%). Wärme für Faulturm-Heizung und Gebäude.",
-                "wirkung": f"Energieerzeugung ca. {c['Q_zu']*0.04:.0f} kWh/d. Faulgasproduktion ca. {c['Q_zu']*0.025:.0f} Nm³/d. Reduktion Klärschlammvolumen um ~30%. Kann 30-50% des Eigenbedarfs decken."},
             "pv": {"name": "PV-Anlage (Dachflächen)", "kat": "Umbau", "inv": 100000, "betr": 1500,
                 "icon": "🟣", "color": "#a29bfe",
                 "tech": "100 kWp PV auf Betriebsgebäuden und NK-Abdeckungen. ~950 kWh/(kWp·a) in NRW → ~350 kWh/d im Jahresmittel. Eigenverbrauchsanteil auf KA typisch >85%.",
-                "wirkung": "Ca. 350 kWh/d Eigenstromerzeugung. Amortisation 7-10 Jahre. CO₂-Einsparung ~90 t/a. Kombinierbar mit Batteriespeicher für Spitzenabdeckung."},
+                "wirkung": "Ca. 350 kWh/d Eigenstromerzeugung im Jahresmittel, fast vollständig selbst verbraucht (Erzeugung nur tagsüber). Amortisation 7-10 Jahre. Kombinierbar mit Batteriespeicher für Spitzenabdeckung."},
         }
 
         # Karten generieren
@@ -1755,7 +2441,76 @@ def _(
 
         # Energiebilanz
         e = st
-        e_spar = max(0, 500 + c["Q_zu"] * o2_soll.value * 0.8 / 1000 + (c["Q_zu"] + c["Q_rs"]) * 0.02 - e.get("e_gesamt", 0))
+        e_spar = max(0, e.get("e_geblaese_ref", 0) - e.get("e_geblaese", 0))
+
+        # --- Unter-Tab Pumpentechnik: Umbauplanung, installierter Zustand, Preisliste ---
+        _pkz = get_pk()
+        def _kf_zeile(kks, ort):
+            _a = pm["aggregate"][kks]
+            _antr = f"FU, {_a['kl'][2]} 1/min" if _a["fu"] else "Festdrehzahl 1450 1/min"
+            return (f'<tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 12px;white-space:nowrap">{kks}</td>'
+                    f'<td style="padding:5px 12px;white-space:nowrap">{ort}</td>'
+                    f'<td style="padding:5px 12px;white-space:nowrap">KSB {_a["kl"][0]}</td>'
+                    f'<td style="padding:5px 12px;text-align:right;white-space:nowrap">ø{_a["kl"][1]} mm</td>'
+                    f'<td style="padding:5px 12px;white-space:nowrap">{_antr}</td>'
+                    f'<td style="padding:5px 12px;white-space:nowrap;color:#b2bec3">{_a["umbau"] or "Bestand"}</td></tr>')
+        kf_bestand_html = f'''<div class="pls-c"><h3>📋 Installierter Zustand</h3>
+            <table style="border-collapse:collapse;font-size:0.85em;color:#ffffff;background:#16213e">
+              <tr style="border-bottom:2px solid #0f3460;background:#0f1a30">
+                <th style="padding:6px 12px;color:#74b9ff;text-align:left">KKS</th><th style="padding:6px 12px;color:#74b9ff;text-align:left">Standort</th>
+                <th style="padding:6px 12px;color:#74b9ff;text-align:left">Pumpe</th><th style="padding:6px 12px;color:#74b9ff;text-align:right">Laufrad</th>
+                <th style="padding:6px 12px;color:#74b9ff;text-align:left">Antrieb</th><th style="padding:6px 12px;color:#74b9ff;text-align:left">Stand</th></tr>
+              {_kf_zeile("P-001", "PW Talstraße")}{_kf_zeile("P3.1", "RS-Pumpwerk")}{_kf_zeile("P10.1", "Faulturm-Umwälzung")}
+            </table>
+            <p style="font-size:0.8em;color:#b2bec3;margin:8px 0 2px">Umbauprotokoll:</p>
+            <ul style="font-size:0.8em;color:#dfe6e9;margin:0 0 0 18px;padding:0">
+              {"".join(f"<li>{_x}</li>" for _x in _pkz.get("protokoll", [])) or "<li>keine Umbauten durchgeführt</li>"}
+            </ul></div>'''
+        kf_preis_html = '''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">KSB SE &amp; CO. KGAA · VERTRIEBSBÜRO WEST</div>
+                 <div style="font-size:1.05em;font-weight:bold">RICHTPREISANGEBOT PUMPENTECHNIK</div></div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">Angebot Nr. 4471-2026-118<br>gültig bis 31.12.2026</div>
+          </div>
+          <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e">
+            <tr><td style="padding:4px 12px;color:#5a4820">Sewatec E 100-317, komplett mit Motor 15 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">18.618,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Sewabloc F 80-252, komplett mit Motor 4 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">9.480,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø310 mm für Sewabloc F 100-316</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.457,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø265 mm für Sewabloc F 100-254</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.165,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Dichtungssatz (Gleitringdichtung, Spaltring, O-Ringe) je Pumpe – empfohlen bei Öffnung</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">780,00&ensp;€</td></tr>
+          </table>
+          <p style="font-size:0.76em;color:#5a4820;margin:6px 0 10px;font-style:italic">Preise netto ab Werk. Montage durch Betreiber.</p>
+          <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px;border-top:1px dashed #5a4820;padding-top:8px">ELEKTRO-FACHHANDEL · ANGEBOT ANTRIEBSTECHNIK</div>
+          <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e;margin-top:4px">
+            <tr><td style="padding:4px 12px;color:#5a4820">Frequenzumrichter 15 kW, IP21, EMV-Klasse C2 (Gerät)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.650,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Frequenzumrichter 4 kW, IP21, EMV-Klasse C2 (Gerät)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">690,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Einbaumaterial je FU (Schrankumbau, geschirmte Motorleitung, Schutzorgane)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.200,00&ensp;€</td></tr>
+          </table>
+          <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px;border-top:1px dashed #5a4820;padding-top:8px">ABWASSERBETRIEB · INTERNE RICHTWERTE MONTAGE</div>
+          <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e;margin-top:4px">
+            <tr><td style="padding:4px 12px;color:#5a4820">Stundensatz Monteur (Betriebshandwerker, inkl. Arbeitsplatz- und Gemeinkosten)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">52,00&ensp;€/h</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Austausch Pumpenaggregat (je Standort, 2 Monteure)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">je 32&ensp;h</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Umsetzen einer vorhandenen Pumpe an anderen Standort (2 Monteure)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">je 16&ensp;h</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Laufradwechsel (2 Monteure)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">je 8&ensp;h</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Nachrüstung Frequenzumrichter inkl. Verkabelung (2 Monteure)</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">je 8&ensp;h</td></tr>
+          </table>
+        </div>'''
+        kf_tab = mo.vstack([
+            mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#74b9ff">🔧 Pumpentechnik – Umbauplanung</h3>
+                <p style="font-size:0.85em;color:#b2bec3;margin:0">Auswahl der Aggregate an den drei Standorten. Zur Auswahl stehen die Pumpen und
+                Laufräder, für die Herstellerkennlinien vorliegen. Nach „Umbau durchführen“ arbeitet die Anlage mit der neuen Ausrüstung –
+                Messwerte, Betriebsstunden und Zähler zeigen den neuen Betrieb.</p></div></div>'''),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>PW Talstraße – P-001 (Grundlast)</h3></div></div>'),
+            mo.hstack([kf_tal, kf_tal_fu, kf_tal_n], justify="start", gap=1.5),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>RS-Pumpwerk – P3.1</h3></div></div>'),
+            mo.hstack([kf_rs, kf_rs_fu, kf_rs_n], justify="start", gap=1.5),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>Faulturm-Umwälzung – P10.1</h3></div></div>'),
+            mo.hstack([kf_ft, kf_ft_fu, kf_ft_n], justify="start", gap=1.5),
+            mo.hstack([kf_umbau_btn, kf_reset_btn], justify="start", gap=1),
+            mo.Html(f'<div class="pls"><div class="pls-c" style="border-color:#fdcb6e;font-size:0.9em">{kf_meldung}</div></div>') if kf_meldung else mo.Html(""),
+            mo.Html(f'<div class="pls">{kf_bestand_html}</div>'),
+            mo.Html(f'<div class="pls"><div style="max-width:820px">{kf_preis_html}</div></div>'),
+        ])
 
         modifikationen = mo.vstack([
             # Dashboard-Kopf: Investitions-/Betriebskosten-/Energiebilanz bleibt
@@ -1767,7 +2522,7 @@ def _(
                     Betriebskosten direkt in der Simulation zu sehen. Die Effekte werden sofort in allen Tabs sichtbar.
                 </p>
                 {vtbl(
-                    vr("Aktive Modifikationen", f"{n_aktiv}", "von 11")
+                    vr("Aktive Modifikationen", f"{n_aktiv}", "von 10")
                     + vr("Investitionssumme", f"{inv_total:,.0f}", "€")
                     + vr("Zusätzl. Betriebskosten", f"{betr_total:,.0f}", "€/a")
                     + vr("Energieeinsparung Belüftung", f"{e_spar:.0f}", "kWh/d")
@@ -1804,15 +2559,13 @@ def _(
                 ]),
                 "🟣 Umbauten": mo.vstack([
                     mo.Html('<div class="pls"><div class="pls-c" style="border-color:#a29bfe"><h3 style="color:#a29bfe">🟣 Größere Umbauten & Neubauten</h3><p style="font-size:0.85em;color:#b2bec3;margin:0">Hohe Investition, transformative Wirkung.</p></div></div>'),
-                    mo.hstack([mod_stufe4, mod_faulturm, mod_pv], justify="start", gap=0.5),
+                    mo.hstack([mod_stufe4, mod_pv], justify="start", gap=0.5),
                     mo.Html(f'''<div class="pls"><div class="pls-g2">
                         {mod_card("stufe4", mod_stufe4)}
-                        {mod_card("faulturm", mod_faulturm)}
-                    </div><div class="pls-g2">
                         {mod_card("pv", mod_pv)}
-                        <div></div>
                     </div></div>'''),
                 ]),
+                "🔧 Pumpentechnik": kf_tab,
             }, lazy=True),
         ])
 
@@ -2261,8 +3014,8 @@ def _(
 <!-- TITELBLOCK -->
 <rect x="5" y="4" width="1590" height="42" rx="3" fill="#ffffff" stroke="#1e3050" stroke-width="1.2"/>
 <text x="16" y="22" fill="#0c4fa0" font-size="13.5" font-weight="bold">R&amp;I-FLIESSSCHEMA – KLÄRANLAGE MUSTERSTADT</text>
-<text x="16" y="37" fill="#1a3050" font-size="8.5">Mechanisch-Biologische Reinigung mit N/P-Elimination | 50.000 EW | Q_TW = 12.000 m³/d | Q_max = 30.000 m³/d | angelehnt an DIN EN ISO 10628-2</text>
-<text x="1588" y="22" fill="#1a3050" font-size="8" text-anchor="end">2025-01 | Rev.01</text>
+<text x="16" y="37" fill="#1a3050" font-size="8.5">Mechanisch-Biologische Reinigung mit N/P-Elimination und Schlammfaulung | 50.000 EW | Q_TW = 12.000 m³/d | Q_max = 30.000 m³/d | angelehnt an DIN EN ISO 10628-2</text>
+<text x="1588" y="22" fill="#1a3050" font-size="8" text-anchor="end">2026-09 | Rev.02</text>
 
 <!-- STUFENRAHMEN -->
 <rect x="6"   y="52" width="430" height="390" rx="4" fill="#edf2f8" stroke="#1a3050" stroke-width="1" stroke-dasharray="7,4"/>
@@ -2559,21 +3312,21 @@ def _(
 <path class="p-rs" d="M 896,355 L 896,390 L 961,390"/>
 <!-- ÜS-Abzweig am Knickpunkt (896,390) schon im ÜS-Block behandelt -->
 <path class="p-rs" d="M 896,390 L 896,438 L 778,438"/>
-<!-- P3.1 KSB Sewatec (cx=754, cy=438) -->
+<!-- P3.1–P3.5 KSB Sewabloc F 100-252 (cx=754, cy=438) -->
 <circle cx="754" cy="438" r="11" fill="#ffffff" stroke="#a06020" stroke-width="1.5"/>
 <path d="M 761,432 L 745,438 L 761,444 Z" fill="#7a4010"/>
 <line x1="754" y1="427" x2="754" y2="416" stroke="#385870" stroke-width="1.5"/>
 <rect x="747" y="407" width="14" height="10" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
 <text x="754" y="415" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
-<text x="754" y="456" text-anchor="middle" fill="#7a4010" font-size="7.5">P3.1</text>
-<text x="754" y="465" text-anchor="middle" fill="#503810" font-size="7">Betr./FU</text>
-<!-- P3.2 Reserve (cx=714) -->
+<text x="756" y="456" text-anchor="middle" fill="#7a4010" font-size="7.5">P3.1–3.5</text>
+<text x="756" y="465" text-anchor="middle" fill="#503810" font-size="7">Betrieb</text>
+<!-- P3.6 Reserve (cx=714) -->
 <circle cx="714" cy="438" r="11" fill="#ffffff" stroke="#a06020" stroke-width="1.5"/>
 <path d="M 721,432 L 705,438 L 721,444 Z" fill="#7a4010"/>
 <line x1="714" y1="427" x2="714" y2="416" stroke="#385870" stroke-width="1.5"/>
 <rect x="707" y="407" width="14" height="10" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
 <text x="714" y="415" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
-<text x="714" y="456" text-anchor="middle" fill="#7a4010" font-size="7.5">P3.2</text>
+<text x="714" y="456" text-anchor="middle" fill="#7a4010" font-size="7.5">P3.6</text>
 <text x="714" y="465" text-anchor="middle" fill="#503810" font-size="7">Reserve</text>
 <!-- Schieber vor P3.1 -->
 <path d="M 768,433 L 776,438 L 768,443 Z" fill="#506080"/>
@@ -2615,7 +3368,88 @@ def _(
 <rect x="1024" y="418" width="100" height="50" rx="3" fill="#f0f5ee" stroke="#384810" stroke-width="1.2" stroke-dasharray="5,3"/>
 <text x="1074" y="435" text-anchor="middle" fill="#303810" font-size="8">Eindicker /</text>
 <text x="1074" y="447" text-anchor="middle" fill="#303810" font-size="8">Schlammstapel</text>
-<text x="1074" y="459" text-anchor="middle" fill="#202808" font-size="7.5">PS + ÜS → Entsorgung</text>
+<text x="1074" y="459" text-anchor="middle" fill="#202808" font-size="7.5">PS + ÜS → Faulturm</text>
+
+
+<!-- ═══ SCHLAMMFAULUNG (Rev.02) ═══ -->
+<rect x="1227" y="168" width="367" height="274" rx="4" fill="#f7f4ee" stroke="#5a4020" stroke-width="1" stroke-dasharray="7,4"/>
+<text x="1410" y="181" text-anchor="middle" fill="#403010" font-size="8.5" letter-spacing="2">SCHLAMMFAULUNG</text>
+<!-- Dickschlamm Eindicker → Faulturm -->
+<path class="p-ues" d="M 1124,430 L 1280,430 L 1280,250 L 1290,250" marker-end="url(#aues)"/>
+<text x="1180" y="425" text-anchor="middle" fill="#806018" font-size="7.5">Dickschlamm</text>
+<!-- Faulturm FT-1 -->
+<path d="M 1290,215 Q 1330,190 1370,215 L 1370,345 L 1330,385 L 1290,345 Z" fill="#f3efe4" stroke="#4a3a10" stroke-width="1.8"/>
+<line x1="1292" y1="226" x2="1368" y2="226" stroke="#6a5a30" stroke-width="0.8" stroke-dasharray="4,3"/>
+<text x="1330" y="268" text-anchor="middle" fill="#3a2a08" font-size="10" font-weight="bold">FAULTURM</text>
+<text x="1330" y="282" text-anchor="middle" fill="#3a2a08" font-size="8.5">FT-1</text>
+<text x="1330" y="298" text-anchor="middle" fill="#4a3a18" font-size="7.5">2.200 m³</text>
+<text x="1330" y="310" text-anchor="middle" fill="#4a3a18" font-size="7.5">mesophil 37 °C</text>
+<!-- Faulgas → BHKW -->
+<path d="M 1330,202 L 1330,190 L 1522,190" fill="none" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<rect x="1522" y="178" width="66" height="24" rx="2" fill="#fffaf0" stroke="#8a6010" stroke-width="1.2"/>
+<text x="1555" y="189" text-anchor="middle" fill="#6a4808" font-size="8" font-weight="bold">BHKW</text>
+<text x="1555" y="198" text-anchor="middle" fill="#6a4808" font-size="6.5">Faulgas</text>
+<circle cx="1500" cy="207" r="10" fill="#ffffff" stroke="#8a6010" stroke-width="1.2"/>
+<text x="1500" y="205" text-anchor="middle" fill="#8a6010" font-size="7">FI</text>
+<text x="1500" y="213" text-anchor="middle" fill="#5a4008" font-size="6">608</text>
+<line class="p-sig" x1="1500" y1="197" x2="1500" y2="190"/>
+<!-- Umwälzkreis: Konus → P10.1/P10.2 → W10.1 → Faulturm -->
+<path d="M 1330,385 L 1330,413 L 1372,413" fill="none" stroke="#7a5018" stroke-width="2"/>
+<line x1="1372" y1="396" x2="1372" y2="430" stroke="#7a5018" stroke-width="2"/>
+<line x1="1372" y1="396" x2="1390" y2="396" stroke="#7a5018" stroke-width="2"/>
+<line x1="1372" y1="430" x2="1390" y2="430" stroke="#7a5018" stroke-width="2"/>
+<line x1="1410" y1="396" x2="1428" y2="396" stroke="#7a5018" stroke-width="2"/>
+<line x1="1410" y1="430" x2="1428" y2="430" stroke="#7a5018" stroke-width="2"/>
+<line x1="1428" y1="396" x2="1428" y2="430" stroke="#7a5018" stroke-width="2"/>
+<path d="M 1428,413 L 1470,413 L 1470,316" fill="none" stroke="#7a5018" stroke-width="2"/>
+<path d="M 1470,285 L 1470,222 L 1372,222" fill="none" stroke="#7a5018" stroke-width="2" marker-end="url(#ars)"/>
+<!-- P10.1 -->
+<circle cx="1400" cy="396" r="10" fill="#ffffff" stroke="#a06020" stroke-width="1.5"/>
+<path d="M 1394,391 L 1408,396 L 1394,401 Z" fill="#7a4010"/>
+<line x1="1400" y1="386" x2="1400" y2="384" stroke="#385870" stroke-width="1.5"/>
+<rect x="1394" y="374" width="12" height="10" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
+<text x="1400" y="382" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
+<text x="1366" y="392" text-anchor="end" fill="#7a4010" font-size="7.5">P10.1</text>
+<!-- P10.2 -->
+<circle cx="1400" cy="430" r="10" fill="#ffffff" stroke="#a06020" stroke-width="1.5"/>
+<path d="M 1394,425 L 1408,430 L 1394,435 Z" fill="#7a4010"/>
+<line x1="1400" y1="440" x2="1400" y2="442" stroke="#385870" stroke-width="1.5"/>
+<rect x="1394" y="442" width="12" height="10" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
+<text x="1400" y="450" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
+<text x="1366" y="447" text-anchor="end" fill="#7a4010" font-size="7.5">P10.2</text>
+<!-- Wärmetauscher W10.1 -->
+<circle cx="1470" cy="300" r="15" fill="#ffffff" stroke="#4a3a10" stroke-width="1.5"/>
+<path d="M 1458,306 L 1463,294 L 1468,306 L 1473,294 L 1478,306 L 1482,297" fill="none" stroke="#c03030" stroke-width="1.3"/>
+<text x="1490" y="328" fill="#4a3a18" font-size="7.5">W10.1</text>
+<line x1="1485" y1="295" x2="1560" y2="295" stroke="#c03030" stroke-width="1.4"/>
+<line x1="1560" y1="295" x2="1560" y2="202" stroke="#c03030" stroke-width="1.4"/>
+<line x1="1485" y1="305" x2="1572" y2="305" stroke="#c03030" stroke-width="1.4" stroke-dasharray="5,3"/>
+<line x1="1572" y1="305" x2="1572" y2="202" stroke="#c03030" stroke-width="1.4" stroke-dasharray="5,3"/>
+<text x="1522" y="290" text-anchor="middle" fill="#a02020" font-size="6.5">Heizwasser</text>
+<!-- MSR Faulung -->
+<circle cx="1392" cy="245" r="10" fill="#ffffff" stroke="#3a6090" stroke-width="1.2"/>
+<text x="1392" y="243" text-anchor="middle" fill="#3a5080" font-size="7">LI</text>
+<text x="1392" y="251" text-anchor="middle" fill="#203060" font-size="6">607</text>
+<line class="p-sig" x1="1382" y1="245" x2="1370" y2="245"/>
+<circle cx="1392" cy="272" r="10" fill="#ffffff" stroke="#3a6090" stroke-width="1.2"/>
+<text x="1392" y="270" text-anchor="middle" fill="#3a5080" font-size="7">TI</text>
+<text x="1392" y="278" text-anchor="middle" fill="#203060" font-size="6">606</text>
+<line class="p-sig" x1="1382" y1="272" x2="1370" y2="272"/>
+<circle cx="1495" cy="372" r="10" fill="#ffffff" stroke="#806030" stroke-width="1.2"/>
+<text x="1495" y="370" text-anchor="middle" fill="#7a5020" font-size="7">FI</text>
+<text x="1495" y="378" text-anchor="middle" fill="#503810" font-size="6">601</text>
+<line class="p-sig" x1="1485" y1="372" x2="1470" y2="372"/>
+<circle cx="1305" cy="400" r="10" fill="#ffffff" stroke="#806030" stroke-width="1.2"/>
+<text x="1305" y="398" text-anchor="middle" fill="#7a5020" font-size="7">PI</text>
+<text x="1305" y="406" text-anchor="middle" fill="#503810" font-size="6">602</text>
+<line class="p-sig" x1="1315" y1="402" x2="1330" y2="405"/>
+<circle cx="1495" cy="425" r="10" fill="#ffffff" stroke="#806030" stroke-width="1.2"/>
+<text x="1495" y="423" text-anchor="middle" fill="#7a5020" font-size="7">PI</text>
+<text x="1495" y="431" text-anchor="middle" fill="#503810" font-size="6">603</text>
+<line class="p-sig" x1="1485" y1="422" x2="1470" y2="413"/>
+<!-- Faulschlamm → Entwässerung -->
+<path class="p-ues" d="M 1330,413 L 1330,462 L 1236,462" marker-end="url(#aues)"/>
+<text x="1240" y="474" fill="#806018" font-size="7.5">Faulschlamm → Entwässerung</text>
 
 <!-- ═══ MESSSCHACHT / ABLAUF ═══ -->
 <rect x="1010" y="248" width="90" height="88" rx="3" fill="#edf8f3" stroke="#1a5030" stroke-width="1.5"/>
@@ -2752,9 +3586,9 @@ def _(
   <line x1="468" y1="551" x2="1026" y2="551" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="563">P2.1</text><text x="514" y="563">Interne Rezirkulation Nitri→Deni, FU</text><text x="780" y="563">Axialpumpe/KP, ~2 × Q_ZU</text>
   <line x1="468" y1="567" x2="1026" y2="567" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="579">P3.1</text><text x="514" y="579">Rücklaufschlammpumpe (Betrieb), FU</text><text x="780" y="579">KSB Sewatec, Kreiselpumpe</text>
+  <text x="476" y="579">P3.1–3.6</text><text x="514" y="579">Rücklaufschlammpumpen, Stufenschaltung</text><text x="780" y="579">6 × KSB Sewabloc F 100-252</text>
   <line x1="468" y1="583" x2="1026" y2="583" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="595">P3.2</text><text x="514" y="595">Rücklaufschlammpumpe (Reserve)</text><text x="780" y="595">KSB Sewatec, Kreiselpumpe</text>
+  <text x="476" y="595">P10.1/2</text><text x="514" y="595">Umwälzpumpen Faulturm (Betr. / Res.)</text><text x="780" y="595">KSB Sewabloc F 100-254</text>
   <line x1="468" y1="599" x2="1026" y2="599" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="611">P5.1</text><text x="514" y="611">Überschussschlammpumpe, drehzahlgeregelt</text><text x="780" y="611">Seepex BN 52-6L, ESP</text>
   <line x1="468" y1="615" x2="1026" y2="615" stroke="#dce4f0" stroke-width="0.7"/>
@@ -2796,7 +3630,7 @@ def _(
   <text x="1050" y="539" fill="#334860">→ Nachklärung → Simultanfällung P (FeCl₃) → Ablauf Vorfluter</text>
   <text x="1050" y="558" fill="#1a4080">Regelungen:</text>
   <text x="1050" y="570" fill="#334860">• O₂-Regelung: PID-Regler auf QI 301, Stellglied FU-Gebläse G1.1</text>
-  <text x="1050" y="582" fill="#334860">• RS-Verhältnis: FU-Regelung P3.1, Sollwert ~0,75</text>
+  <text x="1050" y="582" fill="#334860">• RS-Verhältnis: Stufenschaltung P3.1–P3.6, Sollwert ~0,75</text>
   <text x="1050" y="594" fill="#334860">• ÜS-Menge: Zeitprogramm P5.1, Schlammalter-gesteuert</text>
   <text x="1050" y="606" fill="#334860">• Fällmitteldos.: PI-Regler auf P-ges (QI 501), Stellglied P7.1</text>
   <text x="1050" y="618" fill="#334860">• Zulaufpumpe: FU-Regelung auf Füllstand LI 103</text>
@@ -2816,10 +3650,10 @@ def _(
   <text x="1050" y="810" fill="#334860">• Primärschlamm: ~0,5 % von Q_ZU, TS ~35 g/L</text>
   <text x="1050" y="822" fill="#334860">• Rücklaufschlamm: Verhältnis ~0,75, TS ~8–12 g/L</text>
   <text x="1050" y="834" fill="#334860">• Überschussschlamm: ~200 m³/d, Schlammalter ~12–15 d</text>
-  <text x="1050" y="846" fill="#334860">• PS + ÜS → gemeinsamer Eindicker vor Entsorgung</text>
+  <text x="1050" y="846" fill="#334860">• PS + ÜS → Eindicker → Faulturm FT-1 (37 °C) → Entwässerung</text>
   <text x="1050" y="866" fill="#1a4080">Energetik:</text>
-  <text x="1050" y="878" fill="#334860">• Gebläse: ~60 % des Gesamtverbrauchs</text>
-  <text x="1050" y="890" fill="#334860">• Pumpen: ~20 %  |  Grundlast: ~20 %</text>
+  <text x="1050" y="878" fill="#334860">• Gebläse ~50 %  |  Pumpen ~25–30 %  |  Schlamm, Gebäude ~20 %</text>
+  <text x="1050" y="890" fill="#334860">• Eigenstrom BHKW (Faulgas) deckt ca. die Hälfte des Bedarfs</text>
 </g>
 
 </svg>
@@ -2873,7 +3707,8 @@ def _(
 
         # --- Andere Pumpwerke im Netz (Live-Deko, nur Übersicht) ---
         pw_ost_fuell = min(95, 30 + (rf - 1) * 25)
-        pw_tal_fuell = min(95, 40 + (rf - 1) * 20)
+        tal = pm["talstrasse_sim"](hist, th, 12000.0)
+        pw_tal_fuell = min(100.0, max(0.0, (tal["z"][-1] - pm["tal"]["z_sohle"]) / (pm["tal"]["z_nue"] - pm["tal"]["z_sohle"]) * 100))
         pw_ind_fuell = min(95, 20 + (rf - 1) * 30)
 
         def _pw_farbe(pct):
@@ -2936,7 +3771,7 @@ def _(
           <!-- PW TALSTRASSE (Pumpstation mit 2 Pumpen → 2 Speicherbecken → Freigefälle zur KA) -->
           <rect x="260" y="220" width="190" height="90" rx="6" fill="#16213e" stroke="#0984e3" stroke-width="1.5"/>
           <text x="355" y="240" fill="#74b9ff" text-anchor="middle" font-size="10" font-weight="bold" font-family="monospace">PW TALSTRASSE</text>
-          <text x="355" y="253" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">KKS: APW-03 · 2 × KP DN 200</text>
+          <text x="355" y="253" fill="#b2bec3" text-anchor="middle" font-size="8" font-family="monospace">KKS: APW-03 · 2 × KSB Sewabloc F 100</text>
           <rect x="270" y="262" width="170" height="10" fill="#2d3436" stroke="#0f3460" stroke-width="1"/>
           <rect x="270" y="262" width="{1.7 * pw_tal_fuell}" height="10" fill="{_pw_farbe(pw_tal_fuell)}"/>
           <text x="355" y="285" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">Füllstand Pumpensumpf {pw_tal_fuell:.0f} %</text>
@@ -3133,6 +3968,122 @@ def _(
         </div>
         '''
 
+        # === DETAIL PW TALSTRASSE (APW-03): Schaltbetrieb, Messwerte, Trend, Datenblatt ===
+        tal_cfg = pm["tal"]
+        tal_z = tal["z"][-1]
+        tal_on1 = tal["on1"][-1]
+        tal_on2 = tal["on2"][-1]
+        tal_hgeo = pm["standorte"]["APW03"]["z_aus"] - tal_z
+        tal_m1 = lp_mess("P-001", tal_on1, tal_z - tal_cfg["z_achse"], 2 if tal_on2 else 1, tal_hgeo)
+        tal_m2 = lp_mess("P-002", tal_on2, tal_z - tal_cfg["z_achse"], 2, tal_hgeo)
+        tal_vsb = tal["v_sb"][-1]
+        tal_nue = any(tal["nue"][-30:])
+        tal_ueb = any(tal["ueb"][-30:])
+        if tal_on1 and tal_on2:
+            tal_zust, tal_farbe = "P-001 + P-002 Parallelbetrieb", "#fdcb6e"
+        elif tal_on1:
+            tal_zust, tal_farbe = "P-001 in Betrieb", "#00b894"
+        else:
+            tal_zust, tal_farbe = "Pumpen aus – Sumpf füllt", "#b2bec3"
+        tal_alarm = ""
+        if tal_nue:
+            tal_alarm += '<div class="pls-alarm"><strong>🚨 Notüberlauf Pumpensumpf APW-03 aktiv</strong> – Zufluss übersteigt Förderleistung</div>'
+        if tal_ueb:
+            tal_alarm += '<div class="pls-alarm"><strong>⚠️ Speicherbecken B-002/B-003 voll</strong> – Beckenüberlauf aktiv</div>'
+        tal_messort = ("APW03-PI 11/12 (P-001), APW03-PI 13/14 (P-002) in Saug- bzw. Druckleitung je DN 200, "
+                       "Messstellen auf Höhe Pumpenachse +51,80 m NHN")
+        tal_zust_row = ('<tr><td style="padding:3px 8px 3px 0;color:#b2bec3;white-space:nowrap">Betriebszustand</td>'
+                        f'<td style="padding:3px 0 3px 8px;white-space:nowrap;font-weight:bold;color:{tal_farbe}">{tal_zust}</td></tr>')
+        tal_drossel = tal_cfg["q_dr"] if tal_vsb > 1 else 0.0
+        tal_live_html = f'''<div class="pls-c">
+            <h3>📡 Live-Werte PW Talstraße (Außenstation APW-03)</h3>
+            {tal_alarm}
+            {vtbl(
+                vr("Füllstand Pumpensumpf APW03-LI 01", f"{tal_z:.2f}", "m NHN")
+                + vr("Förderstrom Druckleitung APW03-FI 01", f"{tal_m1['q'] + tal_m2['q']:.1f}", "m³/h")
+                + tal_zust_row
+                + vr("Füllstand Speicherbecken B-002/B-003 APW03-LI 02", f"{tal_vsb / tal_cfg['V_sb'] * 100:.0f}", "%")
+                + vr("Drosselabfluss zur KA APW03-FI 02", f"{tal_drossel:.1f}", "m³/h")
+            )}
+            <p style="font-size:0.78em;color:#b2bec3;margin:6px 0 0 0">
+                Fernwirk-Status: OK · Datenübertragung zyklisch 60 s · Verbindung LWL
+            </p>
+        </div>'''
+
+        tal_datenblatt_html = '''
+        <div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div>
+              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT MECKELBERG – ABWASSERBETRIEB</div>
+              <div style="font-size:1.1em;font-weight:bold;color:#1a1a2e">BAUWERKSDATENBLATT</div>
+            </div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">
+              Blatt Nr.: APW-03/DB-01<br>Stand: 04/2012<br>Archiv: Ordner 51/A
+            </div>
+          </div>
+          <h3 style="color:#1a1a2e;border-color:#5a4820;margin:8px 0">Pumpwerk Talstraße mit Speicherbecken B-002 / B-003</h3>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
+            <tr><td style="padding:4px 12px;color:#5a4820">Anlagenkennzeichen (KKS)</td><td style="padding:4px 12px;font-weight:bold">APW-03</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Baujahr Bauwerk / Pumpentausch</td><td style="padding:4px 12px;font-weight:bold">1998 / 2012</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Bauart</td><td style="padding:4px 12px;font-weight:bold">Nasssumpf, Pumpen trocken aufgestellt (Pumpenkammer)</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Pumpensumpf, Grundfläche (innen)</td><td style="padding:4px 12px;font-weight:bold">5,00 m × 5,00 m</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Sohle Pumpensumpf</td><td style="padding:4px 12px;font-weight:bold">+53,90 m NHN</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Pumpenachse</td><td style="padding:4px 12px;font-weight:bold">+51,80 m NHN</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Schaltpunkte P-001 (Ein / Aus)</td><td style="padding:4px 12px;font-weight:bold">+55,40 / +54,60 m NHN</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Schaltpunkte P-002 (Ein / Aus)</td><td style="padding:4px 12px;font-weight:bold">+55,80 / +55,10 m NHN</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Hochwasseralarm / Notüberlauf</td><td style="padding:4px 12px;font-weight:bold">+56,20 / +56,60 m NHN</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Förderpumpen</td><td style="padding:4px 12px;font-weight:bold">2 × KSB Sewabloc F 100-316 (P-001 Grundlast, P-002 Spitzenlast/Reserve)</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Druckleitung</td><td style="padding:4px 12px;font-weight:bold">DN 200, GGG, L ≈ 1.650 m (Bj. 1998)</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Zweigleitungen zu B-002 / B-003</td><td style="padding:4px 12px;font-weight:bold">DN 125, je ca. 40 m</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Einlauf Speicherbecken (freier Auslauf)</td><td style="padding:4px 12px;font-weight:bold">+75,00 m NHN</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Speicherbecken B-002 / B-003</td><td style="padding:4px 12px;font-weight:bold">je 400 m³, Stahlbeton, offen</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Ablauf Speicherbecken</td><td style="padding:4px 12px;font-weight:bold">Freigefälle DN 250 zur KA, Drosselabfluss ca. 42 m³/h</td></tr>
+          </table>
+          <p style="font-size:0.78em;color:#5a4820;margin:10px 0 0 0;font-style:italic;border-top:1px dashed #5a4820;padding-top:6px">
+            Anmerkung: Höhenangaben aus Bestandsvermessung 1998. Pumpen 2012 gegen KSB-Aggregate getauscht,
+            Rohrleitungen und Armaturen im Bestand belassen. Erneuerung der Druckleitung in Planung.
+          </p>
+        </div>'''
+
+        import plotly.graph_objects as _tgo
+        from plotly.subplots import make_subplots as _tmp
+        _rho_t = lp_agg["P-001"]["rho"]
+        _ps = [_rho_t * 9.81 * (zz - tal_cfg["z_achse"]) / 1e5 for zz in tal["z"]]
+        _pd = [p + (_rho_t * 9.81 * hh / 1e5 if o else 0.0) for p, hh, o in zip(_ps, tal["h1"], tal["on1"])]
+        fig_tal = _tmp(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                       subplot_titles=("Füllstand Pumpensumpf APW03-LI 01 [m NHN]",
+                                       "Förderstrom Druckleitung APW03-FI 01 [m³/h]",
+                                       "Druck druckseitig P-001 APW03-PI 12 [bar]",
+                                       "Füllstand Speicherbecken B-002/B-003 APW03-LI 02 [m³]"))
+        fig_tal.add_trace(_tgo.Scatter(x=tal["t"], y=tal["z"], mode="lines", line=dict(color="#74b9ff", width=1.4)), row=1, col=1)
+        for _zz, _lab in [(tal_cfg["z_ein1"], "Ein P-001"), (tal_cfg["z_aus1"], "Aus P-001"), (tal_cfg["z_ein2"], "Ein P-002")]:
+            fig_tal.add_hline(y=_zz, line_dash="dot", line_color="#636e72", row=1, col=1,
+                              annotation_text=_lab, annotation_position="top left",
+                              annotation_font_size=8, annotation_font_color="#b2bec3")
+        fig_tal.add_trace(_tgo.Scatter(x=tal["t"], y=tal["q"], mode="lines", line=dict(color="#00b894", width=1.2), line_shape="hv"), row=2, col=1)
+        fig_tal.add_trace(_tgo.Scatter(x=tal["t"], y=_pd, mode="lines", line=dict(color="#fdcb6e", width=1.2), line_shape="hv"), row=3, col=1)
+        fig_tal.add_trace(_tgo.Scatter(x=tal["t"], y=tal["v_sb"], mode="lines", line=dict(color="#a29bfe", width=1.4)), row=4, col=1)
+        fig_tal.update_layout(height=640, template="plotly_dark", paper_bgcolor="#1a1a2e", plot_bgcolor="#16213e",
+                              showlegend=False, font=dict(family="Consolas,monospace", size=10, color="#dfe6e9"),
+                              margin=dict(t=35, b=35, l=55, r=20))
+        fig_tal.update_xaxes(gridcolor="#0f3460")
+        fig_tal.update_xaxes(title_text="Simulationszeit [h]", row=4, col=1)
+        fig_tal.update_yaxes(gridcolor="#0f3460")
+        fig_tal.update_annotations(font_size=10)
+
+        talstrasse_detail = mo.vstack([
+            mo.Html(f'''<div class="pls"><div class="pls-g2">
+                <div>{tal_live_html}</div>
+                <div>{tal_datenblatt_html}</div>
+            </div></div>'''),
+            mo.Html(f'''<div class="pls"><div class="pls-g2">
+                {lp_faceplate("P-001", tal_m1, tal_on1, tal["bh1"], tal["lz1"], tal["sp1"], tal_messort, q_fi=tal_m1["q"] + tal_m2["q"])}
+                {lp_faceplate("P-002", tal_m2, tal_on2, tal["bh2"], tal["lz2"], tal["sp2"], tal_messort, q_fi=tal_m1["q"] + tal_m2["q"])}
+            </div></div>'''),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>📈 Trend PW Talstraße – letzte 48 h (Fernwirk-Archiv, 2-min-Werte)</h3></div></div>'),
+            fig_tal,
+        ])
+
         aussenanlagen = mo.vstack([
             # Netzübersicht oben
             mo.Html(f'''<div class="pls"><div class="pls-c">
@@ -3154,9 +4105,13 @@ def _(
             # Handskizze aus Bauarchiv
             mo.Html(f'<div class="pls">{bhf_skizze_svg}</div>'),
 
+            # Detailansicht PW Talstraße
+            mo.Html('<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#74b9ff">🏗️ PW Talstraße (APW-03) – Detailansicht</h3></div></div>'),
+            talstrasse_detail,
+
             # Hinweis zu den anderen Pumpwerken (neutral, ohne didaktischen Bezug)
             mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#0984e3">
-                <h3 style="color:#74b9ff">ℹ️ Weitere Pumpwerke (PW Ost, PW Talstraße, PW Industriepark)</h3>
+                <h3 style="color:#74b9ff">ℹ️ Weitere Pumpwerke (PW Ost, PW Industriepark)</h3>
                 <p style="font-size:0.85em;color:#b2bec3;margin:0">
                     Für diese Außenstationen liegen aktuell nur die Live-Füllstände auf der Netzübersicht
                     vor. Ausführliche Bauwerksdatenblätter können auf Anforderung aus dem Bauarchiv
@@ -3611,6 +4566,177 @@ def _(
         ])
 
 
+        # ====== ENERGIE-TAB: Zählerauswertung, Lastgang, Stromvertrag, Eigenerzeugung ======
+        en_rng = np.random.default_rng(int(th) * 3 + 11)
+        en_uv = {k: v * (1 + en_rng.normal(0, 0.015)) for k, v in st.get("e_uv", dict()).items()}
+        en_bhkw_d = st.get("e_bhkw", 0.0) * (1 + en_rng.normal(0, 0.02))
+        en_pv_d = st.get("e_pv", 0.0) * (1 + en_rng.normal(0, 0.08)) if st.get("e_pv", 0.0) > 0 else 0.0
+        en_apw_d = st.get("e_apw03", 0.0) * (1 + en_rng.normal(0, 0.03))
+        en_tg = pm["tagesgang"]
+        en_pv_form = [max(0.0, np.sin(np.pi * (hh + 0.5 - 6.0) / 14.0)) if 6 <= hh < 20 else 0.0 for hh in range(24)]
+        en_pv_sum = sum(en_pv_form)
+        en_last, en_bezug, en_einsp, en_bh, en_pvh = [], [], [], [], []
+        for hh in range(24):
+            _l = (en_uv.get("uv1", 0) / 24 * en_tg[hh]
+                  + en_uv.get("uv2", 0) / 24 * (0.7 + 0.3 * en_tg[hh])
+                  + (en_uv.get("uv3", 0) + en_uv.get("uv4", 0) + en_uv.get("uv5", 0) + en_uv.get("uv6", 0)) / 24)
+            _b = en_bhkw_d / 24
+            _p = en_pv_d * en_pv_form[hh] / en_pv_sum if en_pv_sum > 0 else 0.0
+            en_last.append(_l); en_bh.append(_b); en_pvh.append(_p)
+            en_bezug.append(max(0.0, _l - _b - _p)); en_einsp.append(max(0.0, _b + _p - _l))
+        en_ges_d = sum(en_last)
+        en_bezug_d = sum(en_bezug)
+        en_einsp_d = sum(en_einsp)
+        en_spitze = max(en_bezug) * 1.08
+        en_h = int(th % 24)
+
+        def en_zeile(nr, bez, wert, fett=False):
+            _fw = "bold" if fett else "normal"
+            return (f'<tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 14px;color:#b2bec3;white-space:nowrap">{nr}</td>'
+                    f'<td style="padding:5px 14px;white-space:nowrap;font-weight:{_fw}">{bez}</td>'
+                    f'<td style="padding:5px 14px;text-align:right;white-space:nowrap;font-weight:bold;color:#74b9ff">{wert:.0f}&ensp;kWh</td></tr>')
+        en_rows = (en_zeile("EZ-01", "Übergabezähler Netzbezug (Bezug)", en_bezug_d, True)
+                   + en_zeile("EZ-01", "Übergabezähler Netzbezug (Einspeisung)", en_einsp_d)
+                   + en_zeile("EZ-10", "Erzeugung BHKW-Modul 1", en_bhkw_d))
+        if en_pv_d > 0:
+            en_rows += en_zeile("EZ-11", "Erzeugung PV-Anlage", en_pv_d)
+        en_rows += (en_zeile("EZ-21", "UV-1 Zulauf, Hebewerk, Rechen, Sandfang", en_uv.get("uv1", 0))
+                    + en_zeile("EZ-22", "UV-2 Gebläsestation", en_uv.get("uv2", 0))
+                    + en_zeile("EZ-23", "UV-3 Biologie, Nachklärung, RS-Pumpwerk", en_uv.get("uv3", 0))
+                    + en_zeile("EZ-24", "UV-4 Schlammbehandlung, Faulung", en_uv.get("uv4", 0))
+                    + en_zeile("EZ-25", "UV-5 Betriebsgebäude, Labor, Werkstatt", en_uv.get("uv5", 0)))
+        if en_uv.get("uv6", 0) > 0:
+            en_rows += en_zeile("EZ-26", "UV-6 GAK-Filter (4. Reinigungsstufe)", en_uv.get("uv6", 0))
+        en_rows += en_zeile("APW03-EZ 01", "PW Talstraße (eigener Netzanschluss)", en_apw_d)
+        en_zaehler_html = f'''<div class="pls-c"><h3>🔢 Zählerauswertung – Tageswerte Vortag</h3>
+            <table style="border-collapse:collapse;font-size:0.86em;color:#ffffff;background:#16213e">
+              <tr style="border-bottom:2px solid #0f3460;background:#0f1a30">
+                <th style="padding:8px 14px;color:#74b9ff;text-align:left">Zähler</th>
+                <th style="padding:8px 14px;color:#74b9ff;text-align:left">Messstelle</th>
+                <th style="padding:8px 14px;color:#74b9ff;text-align:right">Arbeit Vortag</th></tr>
+              {en_rows}
+            </table>
+            <p style="font-size:0.78em;color:#b2bec3;margin:6px 0 0">EZ-01: registrierende Leistungsmessung (RLM, 15-min-Mittelwerte) ·
+               höchste Bezugsleistung Vortag: <b style="color:#74b9ff">{en_spitze:.0f} kW</b></p></div>'''
+        en_live_html = f'''<div class="pls-c"><h3>⚡ Aktuelle Leistungen ({en_h:02d}:00 Uhr)</h3>
+            {vtbl(
+                vr("Netzbezug EZ-01", f"{en_bezug[en_h]:.0f}", "kW")
+                + vr("Erzeugung BHKW EZ-10", f"{en_bh[en_h]:.0f}", "kW")
+                + (vr("Erzeugung PV EZ-11", f"{en_pvh[en_h]:.0f}", "kW") if en_pv_d > 0 else "")
+                + vr("Faulgas zum BHKW FI 608", f"{st.get('gas_nm3', 0) / 24:.0f}", "Nm³/h")
+                + vr("Gasspeicher Füllstand", f"{55 + 10 * np.sin(th / 5.0):.0f}", "%")
+            )}</div>'''
+
+        import plotly.graph_objects as _ego
+        fig_en = _ego.Figure()
+        _xh = list(range(25))
+        en_last.append(en_last[-1]); en_bezug.append(en_bezug[-1]); en_bh.append(en_bh[-1]); en_pvh.append(en_pvh[-1])
+        fig_en.add_trace(_ego.Scatter(x=_xh, y=en_last, name="Verbrauch Kläranlage", mode="lines", line=dict(color="#dfe6e9", width=2), line_shape="hv"))
+        fig_en.add_trace(_ego.Scatter(x=_xh, y=en_bezug, name="Netzbezug EZ-01", mode="lines", line=dict(color="#e17055", width=2), line_shape="hv"))
+        fig_en.add_trace(_ego.Scatter(x=_xh, y=en_bh, name="BHKW EZ-10", mode="lines", line=dict(color="#fdcb6e", width=1.6), line_shape="hv"))
+        if en_pv_d > 0:
+            fig_en.add_trace(_ego.Scatter(x=_xh, y=en_pvh, name="PV EZ-11", mode="lines", line=dict(color="#00b894", width=1.6), line_shape="hv"))
+        fig_en.update_layout(height=340, template="plotly_dark", paper_bgcolor="#1a1a2e", plot_bgcolor="#16213e",
+                             font=dict(family="Consolas,monospace", size=10, color="#dfe6e9"),
+                             margin=dict(t=30, b=40, l=55, r=20), legend=dict(orientation="h", y=1.12),
+                             xaxis=dict(title="Uhrzeit Vortag [h]", gridcolor="#0f3460", dtick=2),
+                             yaxis=dict(title="Leistung [kW] (Stundenmittel)", gridcolor="#0f3460", rangemode="tozero"))
+
+        _sd = pm["strom"]
+        _ap_rows = ""
+        for _j, (_nm, _ct) in enumerate(_sd["arbeitspreise"]):
+            _bg = "#f5f0d8" if _j % 2 else "transparent"
+            _ap_rows += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820">{_nm}</td>'
+                         f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_ct:.2f}&ensp;ct/kWh</td></tr>')
+        _ap_sum = sum(v for _, v in _sd["arbeitspreise"])
+        en_vertrag_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">{_sd["lieferant"].upper()}</div>
+                 <div style="font-size:1.05em;font-weight:bold">PREISBLATT ZUM STROMLIEFERVERTRAG</div></div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">Vertrag: {_sd["vertragsnr"]}<br>{_sd["vertrag"]}<br>Laufzeit: {_sd["laufzeit"]}</div>
+          </div>
+          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Meckelberg, Kläranlage Musterstadt · Abrechnungszähler EZ-01 (RLM)</div>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
+            {_ap_rows}
+            <tr style="border-top:2px solid #1a1a2e"><td style="padding:5px 12px;font-weight:bold">Summe Arbeitspreis</td>
+                <td style="padding:5px 12px;text-align:right;font-weight:bold">{_ap_sum:.2f}&ensp;ct/kWh</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Leistungspreis (Jahreshöchstleistung Netzbezug)</td>
+                <td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_sd["leistungspreis"]:.2f}&ensp;€/(kW·a)</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Grundpreis Messstellenbetrieb</td>
+                <td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_sd["grundpreis"]:.2f}&ensp;€/a</td></tr>
+          </table>
+          <p style="font-size:0.76em;color:#5a4820;margin:8px 0 0;font-style:italic">Alle Preise netto zzgl. Umsatzsteuer ({_sd["mwst"]} %).
+             Eigenerzeugter und selbst verbrauchter Strom (BHKW, PV) wird nicht über diesen Vertrag abgerechnet.</p>
+        </div>'''
+        _sa = _sd["apw"]
+        _apw_rows = ""
+        for _j, (_nm, _ct) in enumerate(_sa["arbeitspreise"]):
+            _bg = "#f5f0d8" if _j % 2 else "transparent"
+            _apw_rows += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820">{_nm}</td>'
+                          f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_ct:.2f}&ensp;ct/kWh</td></tr>')
+        _apw_sum = sum(v for _, v in _sa["arbeitspreise"])
+        en_vertrag_apw_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">{_sd["lieferant"].upper()}</div>
+                 <div style="font-size:1.05em;font-weight:bold">PREISBLATT ZUM STROMLIEFERVERTRAG</div></div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">Vertrag: {_sa["vertragsnr"]}<br>{_sa["vertrag"]}<br>Laufzeit: {_sd["laufzeit"]}</div>
+          </div>
+          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Meckelberg · Lieferstelle: {_sa["lieferstelle"]}</div>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
+            {_apw_rows}
+            <tr style="border-top:2px solid #1a1a2e"><td style="padding:5px 12px;font-weight:bold">Summe Arbeitspreis</td>
+                <td style="padding:5px 12px;text-align:right;font-weight:bold">{_apw_sum:.2f}&ensp;ct/kWh</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Grundpreis (Messstellenbetrieb, Abrechnung)</td>
+                <td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_sa["grundpreis"]:.2f}&ensp;€/a</td></tr>
+          </table>
+          <p style="font-size:0.76em;color:#5a4820;margin:8px 0 0;font-style:italic">Alle Preise netto zzgl. Umsatzsteuer ({_sd["mwst"]} %).
+             Standardlastprofil, kein Leistungspreis.</p>
+        </div>'''
+        _mix_rows = ""
+        for _j, (_nm, _pc) in enumerate(_sd["mix"]):
+            _bg = "#f5f0d8" if _j % 2 else "transparent"
+            _mix_rows += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820">{_nm}</td>'
+                          f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_pc}&ensp;%</td>'
+                          f'<td style="padding:4px 12px;width:120px"><div style="background:#5a4820;height:9px;width:{_pc * 1.2:.0f}px"></div></td></tr>')
+        en_kennz_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">{_sd["lieferant"].upper()}</div>
+          <div style="font-size:1.05em;font-weight:bold;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">STROMKENNZEICHNUNG</div>
+          <div style="font-size:0.8em;color:#5a4820;margin-bottom:6px">{_sd["stand_mix"]} · Unternehmensverkaufsmix</div>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">{_mix_rows}</table>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e;margin-top:8px">
+            <tr><td style="padding:4px 12px;color:#5a4820">CO₂-Emissionen</td><td style="padding:4px 12px;font-weight:bold">{_sd["co2_g_kwh"]}&ensp;g/kWh</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Radioaktiver Abfall</td><td style="padding:4px 12px;font-weight:bold">{_sd["rad_g_kwh"]:.4f}&ensp;g/kWh</td></tr>
+          </table>
+        </div>'''
+        _bk = pm["bhkw"]
+        en_bhkw_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">ANLAGENDOKUMENTATION · SCHLAMMFAULUNG</div>
+          <div style="font-size:1.05em;font-weight:bold;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">DATENBLATT {_bk["bez"].upper()}</div>
+          <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
+            <tr><td style="padding:4px 12px;color:#5a4820">Bauart</td><td style="padding:4px 12px;font-weight:bold">{_bk["typ"]}</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Elektrische Nennleistung</td><td style="padding:4px 12px;font-weight:bold">{_bk["p_el"]:.0f} kW</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Elektrischer / thermischer Wirkungsgrad</td><td style="padding:4px 12px;font-weight:bold">{_bk["eta_el"] * 100:.0f} % / {_bk["eta_th"] * 100:.0f} %</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Brennstoff</td><td style="padding:4px 12px;font-weight:bold">Faulgas aus FT-1 (biogen), CH₄ ca. {_bk["ch4"]} %</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Heizwert Faulgas H_u</td><td style="padding:4px 12px;font-weight:bold">ca. {_bk["hu"]:.1f} kWh/Nm³</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Betriebsweise</td><td style="padding:4px 12px;font-weight:bold">gasgeführt, modulierend; Wärme für W10.1 und Gebäude</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Baujahr</td><td style="padding:4px 12px;font-weight:bold">{_bk["baujahr"]}</td></tr>
+          </table>
+        </div>'''
+        en_pv_html = ""
+        if en_pv_d > 0:
+            en_pv_html = f'''<div class="pls-c"><h3>☀️ PV-Anlage Dachflächen</h3>
+                {vtbl(vr("Installierte Leistung", f"{pm['pv']['kwp']:.0f}", "kWp")
+                      + vr("Erzeugung Vortag EZ-11", f"{en_pv_d:.0f}", "kWh")
+                      + vr("Aktuelle Leistung", f"{en_pvh[en_h]:.0f}", "kW"))}</div>'''
+
+        energie_tab = mo.vstack([
+            mo.Html(f'''<div class="pls"><div class="pls-g2"><div>{en_zaehler_html}</div><div>{en_live_html}{en_pv_html}</div></div></div>'''),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>📈 Lastgang Vortag (Stundenmittelwerte)</h3></div></div>'),
+            fig_en,
+            mo.Html(f'''<div class="pls"><div class="pls-g2"><div>{en_vertrag_html}</div><div>{en_vertrag_apw_html}</div></div>
+                <div class="pls-g2"><div>{en_kennz_html}</div><div>{en_bhkw_html}</div></div></div>'''),
+        ])
+
         # === ZWEISTUFIGE TAB-STRUKTUR ===
         # Gruppierung der 13 Einzeltabs in 6 Hauptrubriken, die
         # den Fachperspektiven der Unterrichtsnutzung entsprechen:
@@ -3632,6 +4758,7 @@ def _(
             "⚙️ Betrieb": mo.ui.tabs({
                 "Steuerung": steuerung,
                 "Ablauf & Verlauf": ablauf,
+                "Energie": energie_tab,
             }, lazy=True),
             "🔬 Prozess": mo.ui.tabs({
                 "Zulauf": zulauf,

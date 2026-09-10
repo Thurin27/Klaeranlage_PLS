@@ -1,0 +1,204 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.24.0",
+    "script_metadata_hash": "aac3acd163316312ca5d6458dd73e178"
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "a9d43d6ece555a5d4445d2011ca34e26",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "717a5c42e8b3d81b21c2f2cc156d886c",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<style>\n:root {\n    --bg:#1a1a2e; --panel:#16213e; --border:#0f3460;\n    --accent:#e94560; --ok:#00b894; --warn:#fdcb6e;\n    --danger:#e17055; --txt:#dfe6e9; --val:#74b9ff;\n}\n.pls { background:var(--bg); color:var(--txt); padding:12px; border-radius:8px; font-family:'Consolas','Courier New',monospace; }\n.pls-hdr { background:linear-gradient(90deg,var(--panel),var(--border)); padding:10px 20px; border-radius:6px; display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border:1px solid var(--border); }\n.pls-hdr h2 { margin:0; color:#74b9ff; font-size:1.3em; }\n.pls-st { display:flex; gap:15px; align-items:center; font-size:0.85em; }\n.pls-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:4px; animation:pulse 2s infinite; }\n@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }\n.pls-c { background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:12px; margin-bottom:10px; }\n.pls-c h3 { margin:0 0 8px 0; color:#74b9ff; font-size:1em; border-bottom:1px solid var(--border); padding-bottom:6px; }\n.pls-tbl { width:100%; border-collapse:separate; border-spacing:12px 2px; }\n.pls-tbl td { padding:5px 14px !important; font-size:0.9em; white-space:nowrap; }\n.pls-tbl td:first-child { color:#b2bec3; padding-right:24px !important; }\n.pls-tbl td:last-child { text-align:right; font-weight:bold; padding-left:24px !important; }\n.pls-overview-tbl { width:100%; border-collapse:separate; border-spacing:14px 2px; font-size:0.88em; color:#ffffff; background:#16213e; border-radius:4px; }\n.pls-overview-tbl th { text-align:left; padding:8px 16px !important; color:#74b9ff; border-bottom:2px solid #0f3460; background:#0f1a30; white-space:nowrap; }\n.pls-overview-tbl td { padding:6px 16px !important; border-bottom:1px solid #0f3460; white-space:nowrap; }\n.pls-overview-tbl tr:hover { background:#1e2d4d; }\n.c-v { color:var(--val); } .c-ok { color:var(--ok); } .c-w { color:var(--warn); } .c-d { color:var(--danger); }\n.pls-g2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }\n.pls-g3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }\n.pls-bar { height:16px; border-radius:3px; background:#2d3436; overflow:hidden; margin:4px 0; }\n.pls-bar-f { height:100%; border-radius:3px; transition:width 0.5s; }\n.pls-alarm { background:rgba(233,69,96,0.15); border:1px solid var(--accent); border-radius:4px; padding:6px 10px; margin:4px 0; font-size:0.85em; }\n.pls-sep { border-top:1px solid var(--border); margin:8px 0; padding-top:8px; }\n.pls-time-display { background:#0a0a1a; border:2px solid #74b9ff; border-radius:6px; padding:8px 16px; display:inline-block; font-size:1.1em; color:#74b9ff; margin:4px 0; }\n</style>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "a1ec6bbec6b21d4b41c99dee1918ecb4",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "0c33cd2b43792aeaef2296b230fb2bd5",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "0acc810a3657d01a51b3bf8162523e1c",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "84b5b0efb9a0a412cff5afa29154bad0",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "08c653cc948cb391181d84dca57a19a9",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "SFPL",
+      "code_hash": "c5dfa68d978c9abd7ecdc909b0d0535f",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "BYtC",
+      "code_hash": "548139e2cd0fb093e8798b371fdf2a66",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "RGSE",
+      "code_hash": "384be380c3cb98aa9715261773308810",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Kclp",
+      "code_hash": "2e9ecf50470c42617eb45d1b2add3ab8",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "emfo",
+      "code_hash": "03b8a109e5d1d309d50b7fc1711ca0c5",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Hstk",
+      "code_hash": "e3fb6029acb26abb01624f7f5e24c899",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "nWHF",
+      "code_hash": "97aff0f48429a392e2b0201e64d0749e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/plain": ""
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "iLit",
+      "code_hash": "57cdfbae4e2bd4e35aabebdc917d093d",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/html": "<div style='display: flex;flex: 1;flex-direction: column;justify-content: flex-start;align-items: normal;flex-wrap: nowrap;gap: 0.5rem'><div class=\"pls\"><div class=\"pls-hdr\">\n        <h2>\ud83c\udfed Kl\u00e4ranlage Musterstadt \u2013 Prozessleitsystem</h2>\n        <div class=\"pls-st\">\n            <span><span class=\"pls-dot\" style=\"background:#00b894\"></span> ONLINE</span>\n            <span>EW: 50.000</span>\n            <span>Q: 10956 m\u00b3/d</span>\n            <span class=\"pls-time-display\">\u23f1 Tag 2, 00:00</span>\n        </div>\n    </div></div><marimo-ui-element object-id='iLit-34' random-id='730e073f-dd89-007e-8e52-9f5f1b8b692f'><marimo-tabs data-initial-value='&quot;&quot;' data-label='null' data-tabs='[&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\ud83c\udfed Anlage&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;,&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\u2699\ufe0f Betrieb&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;,&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\ud83d\udd2c Prozess&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;,&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\ud83d\udd27 Instandhaltung&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;,&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\ud83d\udcd0 Regelung &amp;amp; Labor&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;,&quot;&#92;u003cspan class=&#92;&quot;markdown prose dark:prose-invert contents&#92;&quot;&#92;u003e&#92;u003cspan class=&#92;&quot;paragraph&#92;&quot;&#92;u003e\ud83c\udfd7\ufe0f Modifikationen&#92;u003c/span&#92;u003e&#92;u003c/span&#92;u003e&quot;]' data-orientation='&quot;horizontal&quot;'><div data-kind='tab'><marimo-ui-element object-id='iLit-28' random-id='18f69331-835a-bec7-31b3-0e58fd3b777f'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div><div data-kind='tab'><marimo-ui-element object-id='iLit-29' random-id='c03b9975-a8b0-a6c8-4a8b-b9688f2c1393'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div><div data-kind='tab'><marimo-ui-element object-id='iLit-30' random-id='dfa0b37b-44f7-5edf-66d3-49e4dba9f739'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div><div data-kind='tab'><marimo-ui-element object-id='iLit-31' random-id='21a43ac6-fdba-8e3d-81eb-0b778dbf98b7'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div><div data-kind='tab'><marimo-ui-element object-id='iLit-32' random-id='d2266578-b1d0-1989-1049-61c0ef410222'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div><div data-kind='tab'><marimo-ui-element object-id='iLit-33' random-id='0407d873-99d8-53a9-df23-488620c62bd2'><marimo-lazy data-initial-value='false' data-label='null' data-show-loading-indicator='false'></marimo-lazy></marimo-ui-element></div></marimo-tabs></marimo-ui-element></div>"
+          }
+        }
+      ],
+      "console": []
+    }
+  ]
+}
