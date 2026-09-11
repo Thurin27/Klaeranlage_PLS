@@ -898,6 +898,7 @@ def _(
 
     if prev is None or do_reset:
         # Initialisierung: Start im stationären Zustand mit 48h Vorgeschichte
+        np.random.seed(2026)  # reproduzierbar: identischer Startzustand bei allen Nutzern
         current = dict(targets)
         history = []
         for t_init in range(0, 49):
@@ -944,48 +945,69 @@ def _(
     fr_p_ab = current["p_ab"] * Q / 1000
 
     # === ENERGIE (kWh/d) je Unterverteilung ===
-    # UV-2 Gebläsestation: spez. ca. 0,20 kWh/m³ bei O₂-Soll 2 mg/L
-    e_geblaese_ref = Q * 0.20 * (0.55 + 0.225 * ctrl["o2_soll"])
-    e_belueftung = e_geblaese_ref
-    if mods["nh4_sensor"]: e_belueftung *= 0.75  # NH₄-geführt spart ~25%
-    if mods["membran"]: e_belueftung *= 0.70  # besserer O₂-Transfer
-    if mods["intermit"]: e_belueftung *= 0.85  # Belüftungspausen
-    e_geblaese = e_belueftung
-    if mods["turbo"]: e_geblaese *= 0.82  # ~18% effizienter als Drehkolben
-    # UV-1 Zulauf/Hebewerk: P1.1 (gleiches Modell wie Pumpen-Tab) + Rechen, Sandfang
-    _qh = Q / 24
-    _zh = 6.5 + 0.8 + (_qh / 600) ** 2 * 2.5
-    _zeta = max(0.45, 0.72 - abs(_qh - _qh * 1.3 * 0.85) / max(1.0, _qh * 1.3) * 0.3)
-    p_hebewerk = _qh / 3600 * 9810 * _zh / _zeta / 1000 / 0.93
-    e_uv1 = p_hebewerk * 24 + 150
-    # UV-3 Biologie/NK: RS-Pumpwerk (Stufenschaltung), Rezirkulation P4.1, Rührwerke, Räumer, ÜS
-    n_rs_akt = pm["rs_stufen"](Q, ctrl["rs_verhaeltnis"])
-    p_rs = pm["p_el"]("P3.1") + (n_rs_akt - 1) * pm["p_el"]("P3.2")
-    p_rez = 2 * _qh / 3600 * 9810 * 0.4 / 0.65 / 1000 / 0.90
-    e_uv3 = (p_rs + p_rez) * 24 + 150
-    # UV-4 Schlammbehandlung: Umwälzpumpe Faulturm P10.1, Eindickung, Entwässerung, Dosierung
-    p_ft = pm["p_el"]("P10.1")
-    e_uv4 = p_ft * 24 + 200
-    # UV-5 Betriebsgebäude / Grundlast (Labor, EMSR, Beleuchtung, Werkstatt, Hilfsenergie Heizung)
-    e_uv5 = 450
-    e_stufe4 = Q * 0.05 if mods["stufe4"] else 0  # GAK: ~0,05 kWh/m³
-    e_anammox = 30 if mods["anammox"] else 0  # Heizung + Mischer
-    e_pumpen = (p_hebewerk + p_rs + p_rez + p_ft) * 24
-    e_uv = dict(uv1=e_uv1, uv2=e_geblaese, uv3=e_uv3 + e_anammox, uv4=e_uv4, uv5=e_uv5, uv6=e_stufe4)
-    e_gesamt = sum(e_uv.values())
-    # Außenstation PW Talstraße (eigener Netzanschluss): P-001 + Nebenverbraucher 1,2 kW
-    _q_tal = pm["betriebspunkt"](pm["aggregate"]["P-001"]["kl"], "APW03")["Q"]
-    _qroh_24 = float(np.mean([p.get("Q_roh", Q) for p in history[-24:]])) if history else Q
-    _lauf_tal = min(1.0, pm["tal"]["q_tw"] * _qroh_24 / 12000.0 / max(1.0, _q_tal))
-    e_apw03 = pm["p_el"]("P-001") * 24 * _lauf_tal + 1.2 * 24
+    def _energie(Q, _csb, _qroh):
+        # UV-2 Gebläsestation: spez. ca. 0,20 kWh/m³ bei O₂-Soll 2 mg/L
+        e_geblaese_ref = Q * 0.20 * (0.55 + 0.225 * ctrl["o2_soll"])
+        e_belueftung = e_geblaese_ref
+        if mods["nh4_sensor"]: e_belueftung *= 0.75  # NH₄-geführt spart ~25%
+        if mods["membran"]: e_belueftung *= 0.70  # besserer O₂-Transfer
+        if mods["intermit"]: e_belueftung *= 0.85  # Belüftungspausen
+        e_geblaese = e_belueftung
+        if mods["turbo"]: e_geblaese *= 0.82  # ~18% effizienter als Drehkolben
+        # UV-1 Zulauf/Hebewerk: P1.1 (gleiches Modell wie Pumpen-Tab) + Rechen, Sandfang
+        _qh = Q / 24
+        _zh = 6.5 + 0.8 + (_qh / 600) ** 2 * 2.5
+        _zeta = max(0.45, 0.72 - abs(_qh - _qh * 1.3 * 0.85) / max(1.0, _qh * 1.3) * 0.3)
+        p_hebewerk = _qh / 3600 * 9810 * _zh / _zeta / 1000 / 0.93
+        e_uv1 = p_hebewerk * 24 + 150
+        # UV-3 Biologie/NK: RS-Pumpwerk (Stufenschaltung), Rezirkulation P4.1, Rührwerke, Räumer, ÜS
+        n_rs_akt = pm["rs_stufen"](Q, ctrl["rs_verhaeltnis"])
+        p_rs = pm["p_el"]("P3.1") + (n_rs_akt - 1) * pm["p_el"]("P3.2")
+        p_rez = 2 * _qh / 3600 * 9810 * 0.4 / 0.65 / 1000 / 0.90
+        e_uv3 = (p_rs + p_rez) * 24 + 150
+        # UV-4 Schlammbehandlung: Umwälzpumpe Faulturm P10.1, Eindickung, Entwässerung, Dosierung
+        p_ft = pm["p_el"]("P10.1")
+        e_uv4 = p_ft * 24 + 200
+        # UV-5 Betriebsgebäude / Grundlast (Labor, EMSR, Beleuchtung, Werkstatt, Hilfsenergie Heizung)
+        e_uv5 = 450
+        e_stufe4 = Q * 0.05 if mods["stufe4"] else 0  # GAK: ~0,05 kWh/m³
+        e_anammox = 30 if mods["anammox"] else 0  # Heizung + Mischer
+        e_pumpen = (p_hebewerk + p_rs + p_rez + p_ft) * 24
+        e_uv = dict(uv1=e_uv1, uv2=e_geblaese, uv3=e_uv3 + e_anammox, uv4=e_uv4, uv5=e_uv5, uv6=e_stufe4)
+        e_gesamt = sum(e_uv.values())
+        # Außenstation PW Talstraße (eigener Netzanschluss): P-001 + Nebenverbraucher 1,2 kW
+        _q_tal = pm["betriebspunkt"](pm["aggregate"]["P-001"]["kl"], "APW03")["Q"]
+        _lauf_tal = min(1.0, pm["tal"]["q_tw"] * _qroh / 12000.0 / max(1.0, _q_tal))
+        e_apw03 = pm["p_el"]("P-001") * 24 * _lauf_tal + 1.2 * 24
 
-    # Energieerzeugung: BHKW (Faulgas, Bestand) + PV (Modifikation)
-    _lf = current["csb_zu"] * Q / (600.0 * 12000.0)
-    gas_nm3 = pm["bhkw"]["gas_nenn"] * _lf
-    e_bhkw = min(gas_nm3 * pm["bhkw"]["hu"] * pm["bhkw"]["eta_el"], pm["bhkw"]["p_el"] * 24)
-    e_pv = pm["pv"]["e_d"] if mods["pv"] else 0
-    e_erzeugung = e_bhkw + e_pv
-    e_netto = e_gesamt - e_erzeugung
+        # Energieerzeugung: BHKW (Faulgas, Bestand) + PV (Modifikation)
+        _lf = _csb * Q / (600.0 * 12000.0)
+        gas_nm3 = pm["bhkw"]["gas_nenn"] * _lf
+        e_bhkw = min(gas_nm3 * pm["bhkw"]["hu"] * pm["bhkw"]["eta_el"], pm["bhkw"]["p_el"] * 24)
+        e_pv = pm["pv"]["e_d"] if mods["pv"] else 0
+        e_erzeugung = e_bhkw + e_pv
+        e_netto = e_gesamt - e_erzeugung
+        return dict(e_geblaese_ref=e_geblaese_ref, e_geblaese=e_geblaese, p_hebewerk=p_hebewerk, p_rs=p_rs,
+                    p_rez=p_rez, p_ft=p_ft, e_stufe4=e_stufe4, e_pumpen=e_pumpen, e_uv=e_uv, e_gesamt=e_gesamt,
+                    e_apw03=e_apw03, gas_nm3=gas_nm3, e_bhkw=e_bhkw, e_pv=e_pv, e_erzeugung=e_erzeugung,
+                    e_netto=e_netto)
+
+    _qroh_24 = float(np.mean([p.get("Q_roh", Q) for p in history[-24:]])) if history else Q
+    _ea = _energie(Q, current["csb_zu"], _qroh_24)
+    e_geblaese_ref, e_geblaese, p_hebewerk = _ea["e_geblaese_ref"], _ea["e_geblaese"], _ea["p_hebewerk"]
+    p_rs, p_rez, p_ft, e_stufe4, e_pumpen = _ea["p_rs"], _ea["p_rez"], _ea["p_ft"], _ea["e_stufe4"], _ea["e_pumpen"]
+    e_uv, e_gesamt, e_apw03, gas_nm3 = _ea["e_uv"], _ea["e_gesamt"], _ea["e_apw03"], _ea["gas_nm3"]
+    e_bhkw, e_pv, e_erzeugung, e_netto = _ea["e_bhkw"], _ea["e_pv"], _ea["e_erzeugung"], _ea["e_netto"]
+    # Vortag = Tagesmittel des letzten vollständigen Kalendertags (Zählerauswertung)
+    _tag = int(total_hours // 24)
+    _vt = [p for p in history if 24 * (_tag - 1) <= p["t"] < 24 * _tag] or history[-24:]
+    _mq = float(np.mean([p["Q_zu"] for p in _vt])) if _vt else Q
+    _mc = float(np.mean([p["csb_zu"] for p in _vt])) if _vt else current["csb_zu"]
+    _mr = float(np.mean([p.get("Q_roh", _mq) for p in _vt])) if _vt else _qroh_24
+    e_vortag = _energie(_mq, _mc, _mr)
+    # Zählerwerte des Vortags ändern sich erst beim nächsten Tageswechsel (auch nach Umbauten/Sollwertänderungen)
+    if prev is not None and not do_reset and prev.get("vt_tag") == _tag and prev.get("e_vortag"):
+        e_vortag = prev["e_vortag"]
 
     # Betriebskosten Fällmittel
     fm_kosten = ctrl["faellmittel"] * 24 * 0.35 / 1000  # €/d, ~0.35 €/kg FeCl3 40%
@@ -1020,6 +1042,7 @@ def _(
         "e_netto": e_netto, "e_geblaese": e_geblaese, "e_pumpen": e_pumpen,
         "e_stufe4": e_stufe4, "e_bhkw": e_bhkw, "e_pv": e_pv,
         "e_uv": e_uv, "e_apw03": e_apw03, "e_geblaese_ref": e_geblaese_ref, "gas_nm3": gas_nm3,
+        "e_vortag": e_vortag, "vt_tag": _tag,
         "p_hebewerk": p_hebewerk, "p_rs": p_rs, "p_rez": p_rez, "p_ft": p_ft,
         "fm_kosten": fm_kosten,
     })
@@ -4567,11 +4590,12 @@ def _(
 
 
         # ====== ENERGIE-TAB: Zählerauswertung, Lastgang, Stromvertrag, Eigenerzeugung ======
-        en_rng = np.random.default_rng(int(th) * 3 + 11)
-        en_uv = {k: v * (1 + en_rng.normal(0, 0.015)) for k, v in st.get("e_uv", dict()).items()}
-        en_bhkw_d = st.get("e_bhkw", 0.0) * (1 + en_rng.normal(0, 0.02))
-        en_pv_d = st.get("e_pv", 0.0) * (1 + en_rng.normal(0, 0.08)) if st.get("e_pv", 0.0) > 0 else 0.0
-        en_apw_d = st.get("e_apw03", 0.0) * (1 + en_rng.normal(0, 0.03))
+        en_vt = st.get("e_vortag", dict())
+        en_rng = np.random.default_rng(int(th // 24) * 3 + 11)  # Wetter PV: je Tag fest
+        en_uv = dict(en_vt.get("e_uv", dict()))
+        en_bhkw_d = en_vt.get("e_bhkw", 0.0)
+        en_pv_d = en_vt.get("e_pv", 0.0) * (1 + en_rng.normal(0, 0.15)) if en_vt.get("e_pv", 0.0) > 0 else 0.0
+        en_apw_d = en_vt.get("e_apw03", 0.0)
         en_tg = pm["tagesgang"]
         en_pv_form = [max(0.0, np.sin(np.pi * (hh + 0.5 - 6.0) / 14.0)) if 6 <= hh < 20 else 0.0 for hh in range(24)]
         en_pv_sum = sum(en_pv_form)
@@ -4623,7 +4647,7 @@ def _(
                 vr("Netzbezug EZ-01", f"{en_bezug[en_h]:.0f}", "kW")
                 + vr("Erzeugung BHKW EZ-10", f"{en_bh[en_h]:.0f}", "kW")
                 + (vr("Erzeugung PV EZ-11", f"{en_pvh[en_h]:.0f}", "kW") if en_pv_d > 0 else "")
-                + vr("Faulgas zum BHKW FI 608", f"{st.get('gas_nm3', 0) / 24:.0f}", "Nm³/h")
+                + vr("Faulgas zum BHKW FI 608", f"{en_vt.get('gas_nm3', 0) / 24:.0f}", "Nm³/h")
                 + vr("Gasspeicher Füllstand", f"{55 + 10 * np.sin(th / 5.0):.0f}", "%")
             )}</div>'''
 
@@ -4729,8 +4753,56 @@ def _(
                       + vr("Erzeugung Vortag EZ-11", f"{en_pv_d:.0f}", "kWh")
                       + vr("Aktuelle Leistung", f"{en_pvh[en_h]:.0f}", "kW"))}</div>'''
 
+        # --- Jahresbericht Energie 2025 (Bestand vor Umbauten, Betriebstagebuch) ---
+        _jb_zeilen = [
+            ("Stromverbrauch Kläranlage gesamt", "1.718.400 kWh", True),
+            ("&nbsp;&nbsp;UV-1 Zulauf, Hebewerk, Rechen, Sandfang", "221.300 kWh", False),
+            ("&nbsp;&nbsp;UV-2 Gebläsestation", "876.200 kWh", False),
+            ("&nbsp;&nbsp;UV-3 Biologie, Nachklärung, RS-Pumpwerk", "354.900 kWh", False),
+            ("&nbsp;&nbsp;UV-4 Schlammbehandlung, Faulung", "105.400 kWh", False),
+            ("&nbsp;&nbsp;UV-5 Betriebsgebäude, Labor, Werkstatt", "160.600 kWh", False),
+            ("Netzbezug Übergabezähler EZ-01", "881.500 kWh", True),
+            ("Stromerzeugung BHKW-Modul 1 (EZ-10)", "836.900 kWh", True),
+            ("Einspeisung ins Netz", "0 kWh", False),
+            ("Faulgasproduktion (FI 608)", "362.100 Nm³", False),
+            ("PW Talstraße, eigener Netzanschluss (APW03-EZ 01)", "67.900 kWh", True),
+            ("Behandelte Abwassermenge", "4.412.000 m³", False),
+            ("Angeschlossene Einwohnerwerte", "50.000 EW", False),
+        ]
+        _jb_bh = [
+            ("P-001 Förderpumpe PW Talstraße", "4.392 h"), ("P-002 Förderpumpe PW Talstraße", "21 h"),
+            ("P3.1 – P3.5 Rücklaufschlammpumpen (je)", "8.716 – 8.748 h"), ("P3.6 Rücklaufschlammpumpe", "196 h"),
+            ("P10.1 Umwälzpumpe Faulturm", "8.736 h"), ("P10.2 Umwälzpumpe Faulturm", "24 h"),
+        ]
+        _jb_tr = ""
+        for _j, (_nm, _vv, _fett) in enumerate(_jb_zeilen):
+            _bg = "#f5f0d8" if _j % 2 else "transparent"
+            _fw = "bold" if _fett else "normal"
+            _jb_tr += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820;font-weight:{_fw}">{_nm}</td>'
+                       f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_vv}</td></tr>')
+        _jb_bhr = ""
+        for _j, (_nm, _vv) in enumerate(_jb_bh):
+            _bg = "#f5f0d8" if _j % 2 else "transparent"
+            _jb_bhr += (f'<tr style="background:{_bg}"><td style="padding:4px 12px;color:#5a4820">{_nm}</td>'
+                        f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_vv}</td></tr>')
+        en_jb_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
+          <div style="display:flex;justify-content:space-between;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
+            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">ABWASSERBETRIEB STADT MECKELBERG · KLÄRANLAGE MUSTERSTADT</div>
+                 <div style="font-size:1.05em;font-weight:bold">JAHRESBERICHT ENERGIE 2025 (AUSZUG)</div></div>
+            <div style="text-align:right;font-size:0.75em;color:#5a4820">Berichtszeitraum 01.01.–31.12.2025<br>Stand: Februar 2026</div>
+          </div>
+          <div class="pls-g2">
+            <div><div style="font-size:0.8em;color:#5a4820;margin-bottom:4px">Energiebilanz (Jahressummen)</div>
+              <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e">{_jb_tr}</table></div>
+            <div><div style="font-size:0.8em;color:#5a4820;margin-bottom:4px">Betriebsstunden 2025 (Betriebstagebuch)</div>
+              <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e">{_jb_bhr}</table>
+              <p style="font-size:0.76em;color:#5a4820;margin:8px 0 0;font-style:italic">Anlagenzustand 2025: Bestand vor den Umbaumaßnahmen,
+                 keine PV-Anlage. Zählerwerte aus Fernauslesung, Summen gerundet.</p></div>
+          </div>
+        </div>'''
         energie_tab = mo.vstack([
             mo.Html(f'''<div class="pls"><div class="pls-g2"><div>{en_zaehler_html}</div><div>{en_live_html}{en_pv_html}</div></div></div>'''),
+            mo.Html(f'<div class="pls">{en_jb_html}</div>'),
             mo.Html('<div class="pls"><div class="pls-c"><h3>📈 Lastgang Vortag (Stundenmittelwerte)</h3></div></div>'),
             fig_en,
             mo.Html(f'''<div class="pls"><div class="pls-g2"><div>{en_vertrag_html}</div><div>{en_vertrag_apw_html}</div></div>
