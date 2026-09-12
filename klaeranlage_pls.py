@@ -164,6 +164,8 @@ def _(mo):
     }
     _opt_rs = {
         "Bestand – Sewabloc F 100-252, Laufrad ø235": "Sewabloc F 100-252|235",
+        "Neupumpe – Sewabloc F 100-316, Laufrad ø279": "Sewabloc F 100-316|279",
+        "Neupumpe – Sewabloc F 100-316, Laufrad ø310": "Sewabloc F 100-316|310",
         "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø279": "Sewabloc F 100-316|279|umsetzen",
         "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø310": "Sewabloc F 100-316|310|umsetzen",
     }
@@ -215,8 +217,9 @@ def _(PK_BESTAND, get_pk, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_f
         _r = kf_rs.value.split("|")
         _f = kf_ft.value.split("|")
         if len(_r) > 2 and _t[0] == "Sewabloc F 100-316":
-            kf_meldung = ("⚠️ Umbau nicht möglich: Die Sewabloc F 100-316 (P-001) wird im PW Talstraße weiter benötigt. "
-                          "Sie kann nur umgesetzt werden, wenn P-001 durch eine Neupumpe ersetzt wird.")
+            kf_meldung = ("⚠️ Umbau nicht möglich: Die vorhandene Sewabloc F 100-316 (P-001) wird im PW Talstraße weiter "
+                          "benötigt. Umsetzen geht nur, wenn P-001 gleichzeitig durch eine andere Pumpe ersetzt wird – "
+                          "andernfalls für das RS-Pumpwerk eine Neupumpe wählen.")
         else:
             _alt = get_pk()
             _neu = dict(
@@ -460,10 +463,13 @@ def _(get_pk, np):
     _NEU = {
         "Sewatec E 100-317": dict(motor=_MOT15, eta_m=0.93, ausl_q=85, ausl_h=26.0, serien="9985120447/100"),
         "Sewabloc F 80-252": dict(motor=_MOT4, eta_m=0.89, ausl_q=35, ausl_h=9.6, serien="9985120452/100"),
+        "Sewabloc F 100-316": dict(motor=_MOT15, eta_m=0.93, ausl_q=100, ausl_h=25.4, serien="9985120461/100"),
     }
     for _kks, _key in [("P-001", "tal"), ("P3.1", "rs"), ("P10.1", "ft")]:
         _c = _pk[_key]
         _ag = AGGREGATE[_kks]
+        if _c.get("umsetzen") and _pk["tal"]["typ"] == "Sewabloc F 100-316":
+            _c = dict(_c, umsetzen=False)  # P-001 nicht ersetzt: Pumpe ist nicht verfügbar → wie Neubeschaffung
         if _c.get("umsetzen"):
             _ag.update(motor=_p001_alt["motor"], eta_m=_p001_alt["eta_m"], baujahr=_p001_alt["baujahr"],
                        serien=_p001_alt["serien"], ausl_q=_p001_alt["ausl_q"], ausl_h=_p001_alt["ausl_h"],
@@ -633,7 +639,7 @@ def _(get_pk, np):
     # --- Energieversorgung: Stromliefervertrag, Stromkennzeichnung, BHKW ---
     # Vertragswerte sind Beispielwerte der Simulation und können hier angepasst werden.
     STROM = dict(
-        lieferant="Stadtwerke Meckelberg GmbH", vertrag="Sondervertrag Gewerbe SV-G",
+        lieferant="Stadtwerke Schwierbach GmbH", vertrag="Sondervertrag Gewerbe SV-G",
         vertragsnr="SV-2026-04471", laufzeit="01.01.2026 – 31.12.2027",
         arbeitspreise=[("Energiepreis (Arbeitspreis)", 10.30), ("Netzentgelt Mittelspannung (Arbeitspreis)", 4.60),
                        ("Konzessionsabgabe (Sondervertragskunde)", 0.11),
@@ -1023,7 +1029,7 @@ def _(
     if current["ss_nk"] > 150: alarme.append(("🔴", f"Schlammschicht NK: {current['ss_nk']:.0f} > 150 cm"))
     if current["ts"] > 5.0: alarme.append(("⚠️", f"TS Belebung: {current['ts']:.1f} > 5.0 g/L"))
     if current["isv"] > 150: alarme.append(("⚠️", f"ISV: {current['isv']:.0f} mL/g – Blähschlammgefahr"))
-    if current.get("Q_abschlag", 0) > 10: alarme.append(("🚨", f"ABSCHLAG aktiv: {current['Q_abschlag']:.0f} m³/d in Vorfluter (nur mech. gereinigt)"))
+    if current.get("Q_abschlag", 0) > 10: alarme.append(("🚨", f"ABSCHLAG aktiv: {current['Q_abschlag']:.0f} m³/d in den Schwierbach (nur mech. gereinigt)"))
     _rs_kap = pm["rs_n_max"] * pm["rs_q_pumpe"] * 24
     if Q * rs_verhaeltnis.value > _rs_kap * 1.04:
         alarme.append(("⚠️", f"RS-Pumpwerk an Förderkapazität: alle {pm['rs_n_max']} Pumpen in Betrieb ({_rs_kap:.0f} m³/d)"))
@@ -1125,7 +1131,7 @@ def _(
 
         # Header
         hdr = f'''<div class="pls"><div class="pls-hdr">
-            <h2>🏭 Kläranlage Musterstadt – Prozessleitsystem</h2>
+            <h2>🏭 Kläranlage Schwierbach – Prozessleitsystem</h2>
             <div class="pls-st">
                 <span><span class="pls-dot" style="background:#00b894"></span> ONLINE</span>
                 <span>EW: 50.000</span>
@@ -1395,7 +1401,7 @@ def _(
                 <p style="font-size:0.85em;margin:4px 0 8px">
                     Der Gesamtzulauf ({Q_roh_c:.0f} m³/d) überschreitet die Abschlagschwelle
                     ({abschlag_schwelle.value:.0f} m³/d). {Q_abschlag_c:.0f} m³/d werden nach
-                    mechanischer Reinigung (Rechen + Vorklärung) direkt in den Vorfluter abgeschlagen.
+                    mechanischer Reinigung (Rechen + Vorklärung) direkt in den Vorfluter (Schwierbach) abgeschlagen.
                 </p>
                 {vtbl(
                     vr("Gesamtzulauf Q_roh", f"{Q_roh_c:.0f}", "m³/d")
@@ -1411,7 +1417,7 @@ def _(
                     + vr("AFS Abschlag", f"{afs_abs:.0f}", "mg/L")
                 )}
                 <div class="pls-sep"></div>
-                <p style="font-size:0.85em;color:#e17055;margin:4px 0">Schadstofffracht in den Vorfluter:</p>
+                <p style="font-size:0.85em;color:#e17055;margin:4px 0">Schadstofffracht in den Schwierbach:</p>
                 {vtbl(
                     vr("CSB-Fracht Abschlag", f"{fracht_csb_abs:.0f}", "kg/d")
                     + vr("P-Fracht Abschlag", f"{fracht_p_abs:.1f}", "kg/d")
@@ -1454,7 +1460,7 @@ def _(
                         (Temperaturkoeffizient θ = 1,072). Unter 10°C wird die Nitrifikation kritisch langsam.</p>
                         <p><strong>Abschlagschwelle:</strong> Maximaler Durchfluss zur biologischen Stufe.
                         Darüber wird Mischwasser nach mechanischer Reinigung (Rechen, Sandfang, Vorklärung)
-                        direkt in den Vorfluter abgeschlagen – nur teilgereinigt!</p>
+                        direkt in den Schwierbach abgeschlagen – nur teilgereinigt!</p>
                     </div>
                 </div>'''),
             }),
@@ -2497,7 +2503,8 @@ def _(
           </div>
           <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e">
             <tr><td style="padding:4px 12px;color:#5a4820">Sewatec E 100-317, komplett mit Motor 15 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">18.618,00&ensp;€</td></tr>
-            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Sewabloc F 80-252, komplett mit Motor 4 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">9.480,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Sewabloc F 100-316, komplett mit Motor 15 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">14.240,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Sewabloc F 80-252, komplett mit Motor 4 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">9.480,00&ensp;€</td></tr>
             <tr><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø310 mm für Sewabloc F 100-316</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.457,00&ensp;€</td></tr>
             <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø265 mm für Sewabloc F 100-254</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.165,00&ensp;€</td></tr>
             <tr><td style="padding:4px 12px;color:#5a4820">Dichtungssatz (Gleitringdichtung, Spaltring, O-Ringe) je Pumpe – empfohlen bei Öffnung</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">780,00&ensp;€</td></tr>
@@ -2522,7 +2529,10 @@ def _(
             mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#74b9ff">🔧 Pumpentechnik – Umbauplanung</h3>
                 <p style="font-size:0.85em;color:#b2bec3;margin:0">Auswahl der Aggregate an den drei Standorten. Zur Auswahl stehen die Pumpen und
                 Laufräder, für die Herstellerkennlinien vorliegen. Nach „Umbau durchführen“ arbeitet die Anlage mit der neuen Ausrüstung –
-                Messwerte, Betriebsstunden und Zähler zeigen den neuen Betrieb.</p></div></div>'''),
+                Messwerte, Betriebsstunden und Zähler zeigen den neuen Betrieb.</p>
+                <p style="font-size:0.85em;color:#b2bec3;margin:6px 0 0">Für das RS-Pumpwerk kann eine Sewabloc F 100-316 als Neupumpe
+                beschafft oder – falls P-001 ohnehin ersetzt wird – die dort ausgebaute Pumpe umgesetzt werden. Das Umsetzen spart die
+                Beschaffungskosten, verursacht aber Montagekosten und bringt eine gebrauchte Pumpe mit ihren Betriebsstunden ein.</p></div></div>'''),
             mo.Html('<div class="pls"><div class="pls-c"><h3>PW Talstraße – P-001 (Grundlast)</h3></div></div>'),
             mo.hstack([kf_tal, kf_tal_fu, kf_tal_n], justify="start", gap=1.5),
             mo.Html('<div class="pls"><div class="pls-c"><h3>RS-Pumpwerk – P3.1</h3></div></div>'),
@@ -3036,7 +3046,7 @@ def _(
 
 <!-- TITELBLOCK -->
 <rect x="5" y="4" width="1590" height="42" rx="3" fill="#ffffff" stroke="#1e3050" stroke-width="1.2"/>
-<text x="16" y="22" fill="#0c4fa0" font-size="13.5" font-weight="bold">R&amp;I-FLIESSSCHEMA – KLÄRANLAGE MUSTERSTADT</text>
+<text x="16" y="22" fill="#0c4fa0" font-size="13.5" font-weight="bold">R&amp;I-FLIESSSCHEMA – KLÄRANLAGE SCHWIERBACH</text>
 <text x="16" y="37" fill="#1a3050" font-size="8.5">Mechanisch-Biologische Reinigung mit N/P-Elimination und Schlammfaulung | 50.000 EW | Q_TW = 12.000 m³/d | Q_max = 30.000 m³/d | angelehnt an DIN EN ISO 10628-2</text>
 <text x="1588" y="22" fill="#1a3050" font-size="8" text-anchor="end">2026-09 | Rev.02</text>
 
@@ -3489,8 +3499,8 @@ def _(
 <text x="1108" y="301" text-anchor="middle" fill="#085028" font-size="6">502</text>
 <!-- Ablauf → Vorfluter -->
 <line class="p-ab" x1="1100" y1="295" x2="1155" y2="295" marker-end="url(#aab)"/>
-<text x="1165" y="288" fill="#0a6030" font-size="9.5" font-weight="bold">▶ VORFLUTER</text>
-<text x="1165" y="300" fill="#106030" font-size="7.5">(Gewässereinleitung)</text>
+<text x="1165" y="288" fill="#0a6030" font-size="9.5" font-weight="bold">▶ SCHWIERBACH</text>
+<text x="1165" y="300" fill="#106030" font-size="7.5">(Vorfluter, Gewässereinleitung)</text>
 <!-- Regenüberlauf-Einleitstelle -->
 <circle cx="1075" cy="260" r="3.5" fill="#e03848" fill-opacity="0.5"/>
 <!-- QI 503 Abschlagqualität -->
@@ -3650,7 +3660,7 @@ def _(
 <g font-size="8.5">
   <text x="1050" y="514" fill="#1a4080">Verfahren:</text>
   <text x="1050" y="527" fill="#334860">Vorklärung → Vorentst.-zone (Deni, anoxisch) → Nitrifikation (aerob)</text>
-  <text x="1050" y="539" fill="#334860">→ Nachklärung → Simultanfällung P (FeCl₃) → Ablauf Vorfluter</text>
+  <text x="1050" y="539" fill="#334860">→ Nachklärung → Simultanfällung P (FeCl₃) → Ablauf Schwierbach</text>
   <text x="1050" y="558" fill="#1a4080">Regelungen:</text>
   <text x="1050" y="570" fill="#334860">• O₂-Regelung: PID-Regler auf QI 301, Stellglied FU-Gebläse G1.1</text>
   <text x="1050" y="582" fill="#334860">• RS-Verhältnis: Stufenschaltung P3.1–P3.6, Sollwert ~0,75</text>
@@ -3753,17 +3763,17 @@ def _(
           <rect width="900" height="340" fill="url(#grid-net)"/>
 
           <!-- Titel -->
-          <text x="20" y="28" fill="#74b9ff" font-size="14" font-weight="bold" font-family="monospace">Einzugsgebiet Meckelberg – Pumpwerksnetz (Live)</text>
+          <text x="20" y="28" fill="#74b9ff" font-size="14" font-weight="bold" font-family="monospace">Einzugsgebiet Schwierbach – Pumpwerksnetz (Live)</text>
           <text x="20" y="46" fill="#b2bec3" font-size="10" font-family="monospace">Regenfaktor aktuell: RF = {rf:.1f}</text>
 
           <!-- Fluss (Vorfluter) -->
           <path d="M 720,290 Q 760,280 790,300 Q 810,315 840,310" stroke="#3a6090" stroke-width="3" fill="none" opacity="0.6"/>
-          <text x="775" y="285" fill="#3a6090" font-size="9" font-family="monospace">Vorfluter</text>
+          <text x="775" y="285" fill="#3a6090" font-size="9" font-family="monospace">Schwierbach</text>
 
           <!-- KLÄRANLAGE (Zentrum rechts) -->
           <rect x="700" y="140" width="170" height="90" rx="6" fill="#16213e" stroke="#74b9ff" stroke-width="2"/>
           <text x="785" y="162" fill="#74b9ff" text-anchor="middle" font-size="12" font-weight="bold" font-family="monospace">KLÄRANLAGE</text>
-          <text x="785" y="178" fill="#dfe6e9" text-anchor="middle" font-size="10" font-family="monospace">Musterstadt</text>
+          <text x="785" y="178" fill="#dfe6e9" text-anchor="middle" font-size="10" font-family="monospace">Kläranlage</text>
           <text x="785" y="198" fill="#dfe6e9" text-anchor="middle" font-size="9" font-family="monospace">50.000 EW</text>
           <text x="785" y="214" fill="#74b9ff" text-anchor="middle" font-size="9" font-family="monospace">Q = {c["Q_zu"]:.0f} m³/d</text>
 
@@ -3860,7 +3870,7 @@ def _(
         <div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
             <div>
-              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT MECKELBERG – ABWASSERBETRIEB</div>
+              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT SCHWIERBACH – ABWASSERBETRIEB</div>
               <div style="font-size:1.1em;font-weight:bold;color:#1a1a2e">BAUWERKSDATENBLATT</div>
             </div>
             <div style="text-align:right;font-size:0.75em;color:#5a4820">
@@ -3881,7 +3891,7 @@ def _(
             <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Fließgeschw. Trockenwetter</td><td style="padding:4px 12px;font-weight:bold">v_TW = 0,60 m/s</td></tr>
             <tr><td style="padding:4px 12px;color:#5a4820">Fließgeschw. Starkregen</td><td style="padding:4px 12px;font-weight:bold">v_SR = 1,80 m/s</td></tr>
             <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Förderpumpen</td><td style="padding:4px 12px;font-weight:bold">2 × Tauchmotor-KP (1 Betrieb, 1 Reserve)</td></tr>
-            <tr><td style="padding:4px 12px;color:#5a4820">Einleitung nach</td><td style="padding:4px 12px;font-weight:bold">KA Musterstadt, Hauptzulauf</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Einleitung nach</td><td style="padding:4px 12px;font-weight:bold">KA Schwierbach, Hauptzulauf</td></tr>
           </table>
           <p style="font-size:0.78em;color:#5a4820;margin:10px 0 0 0;font-style:italic;border-top:1px dashed #5a4820;padding-top:6px">
             Anmerkung: Unterlagen aus dem Bauarchiv. Geometrieangaben aus
@@ -3982,7 +3992,7 @@ def _(
             <text x="595" y="140" fill="#5a4820" font-size="10" font-family="Georgia, serif" font-style="italic">B ≈ 5 m</text>
 
             <!-- Notiz unten -->
-            <text x="20" y="315" fill="#8a5020" font-size="10" font-family="Georgia, serif" font-style="italic">Handskizze H. Breitenbach, Stadt Meckelberg, 14.09.1987 – n. maßstäblich!</text>
+            <text x="20" y="315" fill="#8a5020" font-size="10" font-family="Georgia, serif" font-style="italic">Handskizze H. Breitenbach, Stadt Schwierbach, 14.09.1987 – n. maßstäblich!</text>
 
             <!-- Kaffeefleck zur Deko :-) -->
             <circle cx="540" cy="260" r="22" fill="#8a5020" opacity="0.12"/>
@@ -4037,7 +4047,7 @@ def _(
         <div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
             <div>
-              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT MECKELBERG – ABWASSERBETRIEB</div>
+              <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">STADT SCHWIERBACH – ABWASSERBETRIEB</div>
               <div style="font-size:1.1em;font-weight:bold;color:#1a1a2e">BAUWERKSDATENBLATT</div>
             </div>
             <div style="text-align:right;font-size:0.75em;color:#5a4820">
@@ -4110,7 +4120,7 @@ def _(
         aussenanlagen = mo.vstack([
             # Netzübersicht oben
             mo.Html(f'''<div class="pls"><div class="pls-c">
-                <h3>🗺️ Netzübersicht – Pumpwerke im Einzugsgebiet Meckelberg</h3>
+                <h3>🗺️ Netzübersicht – Pumpwerke im Einzugsgebiet Schwierbach</h3>
                 <p style="font-size:0.85em;color:#b2bec3;margin:0 0 8px 0">
                     Die Außenstationen werden per Fernwirktechnik (Funk / LWL) an das zentrale PLS
                     der Kläranlage angebunden. Jedes Pumpwerk verfügt über ein Sammelbecken und
@@ -4492,7 +4502,7 @@ def _(
 <div style="background:#fffdf5;color:#1a1a2e;border:2px solid #5a4820;border-radius:6px;padding:16px 20px;margin-top:10px;font-family:'Consolas','Courier New',monospace">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:8px;margin-bottom:10px">
     <div>
-      <div style="font-size:0.75em;color:#5a4820;letter-spacing:1.5px">KLÄRANLAGE MUSTERSTADT – BETRIEBSFÜHRUNG</div>
+      <div style="font-size:0.75em;color:#5a4820;letter-spacing:1.5px">KLÄRANLAGE SCHWIERBACH – BETRIEBSFÜHRUNG</div>
       <div style="font-size:1.1em;font-weight:bold">WARTUNGSAUFTRAG / INSTANDSETZUNG</div>
     </div>
     <div style="text-align:right;font-size:0.8em;color:#5a4820">
@@ -4679,7 +4689,7 @@ def _(
                  <div style="font-size:1.05em;font-weight:bold">PREISBLATT ZUM STROMLIEFERVERTRAG</div></div>
             <div style="text-align:right;font-size:0.75em;color:#5a4820">Vertrag: {_sd["vertragsnr"]}<br>{_sd["vertrag"]}<br>Laufzeit: {_sd["laufzeit"]}</div>
           </div>
-          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Meckelberg, Kläranlage Musterstadt · Abrechnungszähler EZ-01 (RLM)</div>
+          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Schwierbach, Kläranlage Schwierbach · Abrechnungszähler EZ-01 (RLM)</div>
           <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
             {_ap_rows}
             <tr style="border-top:2px solid #1a1a2e"><td style="padding:5px 12px;font-weight:bold">Summe Arbeitspreis</td>
@@ -4705,7 +4715,7 @@ def _(
                  <div style="font-size:1.05em;font-weight:bold">PREISBLATT ZUM STROMLIEFERVERTRAG</div></div>
             <div style="text-align:right;font-size:0.75em;color:#5a4820">Vertrag: {_sa["vertragsnr"]}<br>{_sa["vertrag"]}<br>Laufzeit: {_sd["laufzeit"]}</div>
           </div>
-          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Meckelberg · Lieferstelle: {_sa["lieferstelle"]}</div>
+          <div style="font-size:0.85em;margin-bottom:6px">Kunde: Abwasserbetrieb Stadt Schwierbach · Lieferstelle: {_sa["lieferstelle"]}</div>
           <table style="border-collapse:collapse;font-size:0.86em;color:#1a1a2e">
             {_apw_rows}
             <tr style="border-top:2px solid #1a1a2e"><td style="padding:5px 12px;font-weight:bold">Summe Arbeitspreis</td>
@@ -4787,7 +4797,7 @@ def _(
                         f'<td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">{_vv}</td></tr>')
         en_jb_html = f'''<div class="pls-c" style="background:#fffef5;color:#1a1a2e;border:2px solid #5a4820">
           <div style="display:flex;justify-content:space-between;border-bottom:2px solid #1a1a2e;padding-bottom:6px;margin-bottom:8px">
-            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">ABWASSERBETRIEB STADT MECKELBERG · KLÄRANLAGE MUSTERSTADT</div>
+            <div><div style="font-size:0.75em;color:#5a4820;letter-spacing:2px">ABWASSERBETRIEB STADT SCHWIERBACH · KLÄRANLAGE SCHWIERBACH</div>
                  <div style="font-size:1.05em;font-weight:bold">JAHRESBERICHT ENERGIE 2025 (AUSZUG)</div></div>
             <div style="text-align:right;font-size:0.75em;color:#5a4820">Berichtszeitraum 01.01.–31.12.2025<br>Stand: Februar 2026</div>
           </div>
