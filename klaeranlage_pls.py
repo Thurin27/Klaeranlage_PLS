@@ -166,6 +166,7 @@ def _(mo):
         "Bestand – Sewabloc F 100-252, Laufrad ø235": "Sewabloc F 100-252|235",
         "Neupumpe – Sewabloc F 100-316, Laufrad ø279": "Sewabloc F 100-316|279",
         "Neupumpe – Sewabloc F 100-316, Laufrad ø310": "Sewabloc F 100-316|310",
+        "Neupumpe – Sewabloc F 100-254, Laufrad ø265": "Sewabloc F 100-254|265",
         "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø279": "Sewabloc F 100-316|279|umsetzen",
         "Umsetzen – vorhandene Sewabloc F 100-316 (bisher P-001), Laufrad ø310": "Sewabloc F 100-316|310|umsetzen",
     }
@@ -464,6 +465,7 @@ def _(get_pk, np):
         "Sewatec E 100-317": dict(motor=_MOT15, eta_m=0.93, ausl_q=85, ausl_h=26.0, serien="9985120447/100"),
         "Sewabloc F 80-252": dict(motor=_MOT4, eta_m=0.89, ausl_q=35, ausl_h=9.6, serien="9985120452/100"),
         "Sewabloc F 100-316": dict(motor=_MOT15, eta_m=0.93, ausl_q=100, ausl_h=25.4, serien="9985120461/100"),
+        "Sewabloc F 100-254": dict(motor=_MOT75, eta_m=0.92, ausl_q=90, ausl_h=13.5, serien="9985120468/100"),
     }
     for _kks, _key in [("P-001", "tal"), ("P3.1", "rs"), ("P10.1", "ft")]:
         _c = _pk[_key]
@@ -663,7 +665,7 @@ def _(get_pk, np):
 
     pm = dict(
         kennlinien=KENNLINIEN, standorte=STANDORTE, aggregate=AGGREGATE, p_el=p_el,
-        q_end=q_end, grenzen=grenzen, konfig=_pk, rs_q_p31=RS_Q_P31, rs_stufen=rs_stufen,
+        q_end=q_end, grenzen=grenzen, drehzahlen=_ns, konfig=_pk, rs_q_p31=RS_Q_P31, rs_stufen=rs_stufen,
         tagesgang=TAGESGANG, strom=STROM, bhkw=BHKW, pv=PV,
         h_pumpe=h_pumpe, eta_pumpe=eta_pumpe, h_anlage=h_anlage, betriebspunkt=betriebspunkt,
         rs_n_max=RS_N_MAX, rs_q_pumpe=RS_Q_PUMPE, tal=TAL, talstrasse_sim=talstrasse_sim,
@@ -1805,6 +1807,15 @@ def _(
                     warn = "Förderstrom unter Mindestförderstrom lt. Hersteller"
                 elif _qmax and q > _qmax:
                     warn = "Förderstrom über Maximalförderstrom lt. Hersteller"
+                else:
+                    _p = pm["p_el"](kks, n_par, h_geo) * a["eta_m"]
+                    _nd = pm["drehzahlen"](a["kl"][0], a["kl"][1])
+                    if _p > a["motor"]["pn"] * 1.02:
+                        warn = (f"Motorüberlastung: Wellenleistung {_p:.1f} kW über Nennleistung "
+                                f"{a['motor']['pn']:.1f} kW – Motorschutzschalter würde auslösen, Dauerbetrieb nicht zulässig")
+                    elif _nd and not (min(_nd) <= a["kl"][2] <= max(_nd)):
+                        warn = (f"Drehzahl {a['kl'][2]} 1/min außerhalb der Herstellerkennlinien "
+                                f"({min(_nd)}–{max(_nd)} 1/min) – Betriebspunkt rechnerisch extrapoliert")
             return dict(q=q, p_s=p_s + lp_rng.normal(0, 0.003), p_d=p_d + lp_rng.normal(0, 0.003), warn=warn)
 
         def lp_status(on, bereit=True):
@@ -1869,6 +1880,7 @@ def _(
         # --- Rücklaufschlamm-Pumpwerk P3.1–P3.6 ---
         rs_n_ein = pm["rs_stufen"](tgt["Q_zu"], rs_verhaeltnis.value)
         rs_rows = ""
+        rs_warn = []
         rs_q_sum = 0.0
         for _i in range(pm["rs_n_max"]):
             _k = f"P3.{_i + 1}"
@@ -1876,6 +1888,8 @@ def _(
             _on = _i < rs_n_ein
             _m = lp_mess(_k, _on, 2.20)
             rs_q_sum += _m["q"]
+            if _m.get("warn"):
+                rs_warn.append(f"{_k}: {_m['warn']}")
             _bh = _a["bh0"] + (th if _on else 0.0)
             _td = 'style="padding:5px 14px;text-align:right;white-space:nowrap"'
             rs_rows += (f'<tr style="border-bottom:1px solid #0f3460">'
@@ -1892,9 +1906,11 @@ def _(
             rs_titel = f"6 × KSB {lp_agg['P3.2']['kl'][0]}"
         else:
             rs_titel = f"P3.1: KSB {lp_agg['P3.1']['kl'][0]} · P3.2–P3.6: KSB {lp_agg['P3.2']['kl'][0]}"
+        rs_antrieb = ("P3.1 drehzahlgeregelt über FU, P3.2–P3.6 mit Festdrehzahl (Stern-Dreieck-Anlauf)"
+                      if lp_agg["P3.1"]["fu"] else "Pumpen ohne FU mit Festdrehzahl (Stern-Dreieck-Anlauf)")
         rs_block_html = f'''<div class="pls-c" style="margin-top:10px">
             <h3>Rücklaufschlamm-Pumpwerk P3.1 – P3.6 ({rs_titel})</h3>
-            <p style="font-size:0.8em;color:#b2bec3;margin:0 0 8px">Trocken aufgestellt neben NK1/NK2 · Pumpen ohne FU mit Festdrehzahl (Stern-Dreieck-Anlauf) ·
+            <p style="font-size:0.8em;color:#b2bec3;margin:0 0 8px">Trocken aufgestellt neben NK1/NK2 · {rs_antrieb} ·
                jede Pumpe fördert über eine eigene Druckleitung DN 125 mit freiem Auslauf in das Verteilerbauwerk vor dem Belebungsbecken ·
                Stufenschaltung nach RS-Sollwert</p>
             <table style="border-collapse:collapse;font-size:0.86em;color:#ffffff;background:#16213e">
@@ -1906,6 +1922,7 @@ def _(
                 </tr>
                 {rs_rows}
             </table>
+            {"".join(f'<div class="pls-alarm">⚠️ Meldung {_w}</div>' for _w in rs_warn)}
             {vtbl(
                 vr("Summe Rücklaufschlamm FI 402", f"{c['Q_rs'] / 24:.0f}", "m³/h")
                 + vr("RS-Sollwert (RS-Verhältnis × Q_zu)", f"{tgt['Q_zu'] / 24 * rs_verhaeltnis.value:.0f}", "m³/h")
@@ -2504,10 +2521,11 @@ def _(
           <table style="border-collapse:collapse;font-size:0.85em;color:#1a1a2e">
             <tr><td style="padding:4px 12px;color:#5a4820">Sewatec E 100-317, komplett mit Motor 15 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">18.618,00&ensp;€</td></tr>
             <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Sewabloc F 100-316, komplett mit Motor 15 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">14.240,00&ensp;€</td></tr>
-            <tr><td style="padding:4px 12px;color:#5a4820">Sewabloc F 80-252, komplett mit Motor 4 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">9.480,00&ensp;€</td></tr>
-            <tr><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø310 mm für Sewabloc F 100-316</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.457,00&ensp;€</td></tr>
-            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø265 mm für Sewabloc F 100-254</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.165,00&ensp;€</td></tr>
-            <tr><td style="padding:4px 12px;color:#5a4820">Dichtungssatz (Gleitringdichtung, Spaltring, O-Ringe) je Pumpe – empfohlen bei Öffnung</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">780,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Sewabloc F 100-254, komplett mit Motor 7,5 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">11.860,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Sewabloc F 80-252, komplett mit Motor 4 kW IE3, Laufrad nach Wahl</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">9.480,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø310 mm für Sewabloc F 100-316</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.457,00&ensp;€</td></tr>
+            <tr><td style="padding:4px 12px;color:#5a4820">Ersatzlaufrad ø265 mm für Sewabloc F 100-254</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">1.165,00&ensp;€</td></tr>
+            <tr style="background:#f5f0d8"><td style="padding:4px 12px;color:#5a4820">Dichtungssatz (Gleitringdichtung, Spaltring, O-Ringe) je Pumpe – empfohlen bei Öffnung</td><td style="padding:4px 12px;text-align:right;font-weight:bold;white-space:nowrap">780,00&ensp;€</td></tr>
           </table>
           <p style="font-size:0.76em;color:#5a4820;margin:6px 0 10px;font-style:italic">Preise netto ab Werk. Montage durch Betreiber.</p>
           <div style="font-size:0.75em;color:#5a4820;letter-spacing:2px;border-top:1px dashed #5a4820;padding-top:8px">ELEKTRO-FACHHANDEL · ANGEBOT ANTRIEBSTECHNIK</div>
