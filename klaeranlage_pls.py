@@ -186,9 +186,13 @@ def _(mo):
     kf_ft = mo.ui.dropdown(options=_opt_ft, value="Bestand – Sewabloc F 100-254, Laufrad ø200", label="Aggregat")
     kf_ft_fu = mo.ui.switch(label="Frequenzumrichter")
     kf_ft_n = mo.ui.slider(start=725, stop=1540, step=5, value=1450, label="Drehzahl bei FU-Betrieb [1/min]", show_value=True)
+    kf_ds = mo.ui.dropdown(options={
+        "Bestand – Gerätehaus Schlammbehandlung, Pumpenachse 361,00 m NN": "alt",
+        "Umsetzen – Pumpenraum am Voreindicker VE-1, Pumpenachse 350,80 m NN": "neu",
+    }, value="Bestand – Gerätehaus Schlammbehandlung, Pumpenachse 361,00 m NN", label="Aufstellungsort")
     kf_umbau_btn = mo.ui.run_button(label="🔧 Umbau durchführen und in Betrieb nehmen", kind="success")
     kf_reset_btn = mo.ui.run_button(label="↺ Bestand wiederherstellen", kind="neutral")
-    return (kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+    return (kf_ds, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
             kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn)
 
 
@@ -199,6 +203,7 @@ def _(mo):
         tal=dict(typ="Sewabloc F 100-316", d=279, fu=False, n=1450),
         rs=dict(typ="Sewabloc F 100-252", d=235, fu=False, n=1450, umsetzen=False),
         ft=dict(typ="Sewabloc F 100-254", d=200, fu=False, n=1450),
+        ds=dict(standort="alt"),
         protokoll=[],
     )
     get_pk, set_pk = mo.state(PK_BESTAND)
@@ -206,7 +211,7 @@ def _(mo):
 
 
 @app.cell
-def _(PK_BESTAND, get_pk, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+def _(PK_BESTAND, get_pk, kf_ds, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
       kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn, set_pk):
     # === Umbau ausführen: Auswahl → installierter Zustand ===
     kf_meldung = ""
@@ -228,10 +233,17 @@ def _(PK_BESTAND, get_pk, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_f
                 rs=dict(typ=_r[0], d=int(_r[1]), fu=kf_rs_fu.value, n=kf_rs_n.value if kf_rs_fu.value else 1450,
                         umsetzen=len(_r) > 2),
                 ft=dict(typ=_f[0], d=int(_f[1]), fu=kf_ft_fu.value, n=kf_ft_n.value if kf_ft_fu.value else 1450),
+                ds=dict(standort=kf_ds.value),
             )
             _eintr = []
-            for _key, _name in [("tal", "P-001 PW Talstraße"), ("rs", "P3.1 RS-Pumpwerk"), ("ft", "P10.1 Faulturm")]:
+            for _key, _name in [("tal", "P-001 PW Talstraße"), ("rs", "P3.1 RS-Pumpwerk"), ("ft", "P10.1 Faulturm"),
+                                ("ds", "P6.2 Dickschlammpumpe")]:
                 _c = _neu[_key]
+                if _key == "ds":
+                    if _c != _alt.get("ds", dict(standort="alt")):
+                        _eintr.append(_name + ": umgesetzt nach " + ("Pumpenraum am Voreindicker VE-1 (350,80 m NN)"
+                                      if _c["standort"] == "neu" else "Gerätehaus Schlammbehandlung (361,00 m NN)"))
+                    continue
                 if _c != _alt[_key]:
                     _txt = f"{_name}: {_c['typ']}, Laufrad ø{_c['d']} mm, " + (f"FU {_c['n']} 1/min" if _c["fu"] else "Festdrehzahl")
                     _eintr.append(_txt)
@@ -675,6 +687,116 @@ def _(get_pk, np):
 
 
 @app.cell
+def _(get_pk, np):
+    # === DICKSCHLAMMPUMPE P6.2: Saugseite Voreindicker VE-1 → Faulturm FT-1 ===
+    # Exzenterschneckenpumpe Sulzer PC. Förderstrom ∝ Drehzahl, solange der
+    # Förderraum vollständig gefüllt wird. Reicht die Haltedruckhöhe am
+    # Saugstutzen (NPSH_a) nicht aus, füllen sich die Kammern nur teilweise:
+    # Förderstrom bricht ein, Dampfblasen implodieren im Stator (Kavitation).
+    import io as _io, wave as _wave, base64 as _b64
+
+    DS_ANLAGE = dict(
+        z_spiegel=352.50,          # Betriebsspiegel VE-1 (Überlaufkante Trübwasser) [m NN]
+        z_gok_ve=352.50,           # Geländehöhe am Voreindicker [m NN]
+        z_ft_einlauf=374.00,       # Beschickungsstutzen Faulturm FT-1 [m NN]
+        standorte=dict(
+            alt=dict(name="Gerätehaus Schlammbehandlung (Bestand)", z_pumpe=361.00,
+                     L_s=42.0, D_s=0.150, L_d=110.0, D_d=0.100),
+            neu=dict(name="Pumpenraum am Voreindicker VE-1", z_pumpe=350.80,
+                     L_s=6.0, D_s=0.150, L_d=125.0, D_d=0.100),
+        ),
+        V_U=0.60,                  # Verdrängervolumen [L/Umdrehung]
+        n_min=40, n_max=300,       # zulässiger Drehzahlbereich [1/min]
+        schlupf=0.03,              # Rückströmung bei Nenndruck
+        tau0=5.0,                  # Fließgrenze Dickschlamm TS ≈ 5 % [Pa]
+        mu_p=0.035,                # plastische Viskosität [Pa·s]
+        eta_hyd=0.60, eta_mot=0.88, P_leer=0.35,
+    )
+
+    def _npsh_r(n):
+        # erforderliche Haltedruckhöhe (Herstellerangabe, steigt mit der Drehzahl)
+        return 1.2 + 2.0 * (n / 300.0) ** 2
+
+    def _dh_rohr(q_h, L, D, rho):
+        # Druckverlust Bingham-Fluid (Buckingham, laminar) in m Schlammsäule
+        A = np.pi * D ** 2 / 4
+        v = q_h / 3600 / A
+        dp_L = 16 / 3 * DS_ANLAGE["tau0"] / D + 32 * DS_ANLAGE["mu_p"] * v / D ** 2
+        return dp_L * L / (rho * 9.81), v
+
+    def ds_betrieb(q_soll_h, T_schlamm, ts_gl=50.0, standort=None):
+        """Betriebspunkt P6.2 für geforderten Förderstrom q_soll_h [m³/h]."""
+        a = DS_ANLAGE
+        std = standort or get_pk().get("ds", dict(standort="alt"))["standort"]
+        o = a["standorte"][std]
+        rho = 1000 + 0.4 * ts_gl
+        g = 9.81
+        z_p = o["z_pumpe"]
+        p_b = 101325 * (1 - 2.25577e-5 * z_p) ** 5.25588             # Luftdruck am Standort [Pa]
+        p_v = 611.2 * np.exp(17.62 * T_schlamm / (243.12 + T_schlamm))  # Dampfdruck [Pa]
+        h_s_geo = z_p - a["z_spiegel"]                                # >0: Saugbetrieb, <0: Zulauf
+        n = min(a["n_max"], max(a["n_min"], q_soll_h / (a["V_U"] * 60 / 1000 * (1 - a["schlupf"]))))
+        q_th = a["V_U"] * 60 / 1000 * n * (1 - a["schlupf"])
+        npsh_r = _npsh_r(n)
+        phi = 1.0
+        for _ in range(30):                                           # Füllgrad iterativ
+            q = q_th * phi
+            hv_s, v_s = _dh_rohr(q, o["L_s"], o["D_s"], rho)
+            npsh_a = (p_b - p_v) / (rho * g) - h_s_geo - hv_s
+            phi_neu = min(1.0, max(0.06, npsh_a / npsh_r))
+            if abs(phi_neu - phi) < 1e-4:
+                break
+            phi = 0.5 * phi + 0.5 * phi_neu
+        q = q_th * phi
+        hv_s, v_s = _dh_rohr(q, o["L_s"], o["D_s"], rho)
+        npsh_a = (p_b - p_v) / (rho * g) - h_s_geo - hv_s
+        p_s_abs = max(p_v, p_b - rho * g * (h_s_geo + hv_s))
+        p_s = (p_s_abs - p_b) / 1e5                                   # Saugdruck relativ [bar]
+        hv_d, _v_d = _dh_rohr(q, o["L_d"], o["D_d"], rho)
+        p_d = rho * g * (a["z_ft_einlauf"] - z_p + hv_d) / 1e5        # Enddruck relativ [bar]
+        P1 = (a["P_leer"] + q / 3600 * (p_d - p_s) * 1e5 / a["eta_hyd"] / 1000) / a["eta_mot"]
+        reserve = npsh_a / npsh_r
+        if reserve < 1.0:
+            zustand = "kavitation"
+        elif reserve < 1.3:
+            zustand = "grenzwertig"
+        else:
+            zustand = "normal"
+        _r = dict(z_pumpe=z_p, h_s_geo=h_s_geo, n=n, q_soll=q_soll_h, q=q, phi=phi, npsh_a=npsh_a,
+                  npsh_r=npsh_r, reserve=reserve, p_s=p_s, p_d=p_d, p_b=p_b / 1e5, p_v=p_v / 1e5,
+                  hv_s=hv_s, v_s=v_s, rho=rho, P1=P1)
+        _r = dict((k, float(v)) for k, v in _r.items())
+        _r.update(standort=std, ort=o["name"], zustand=zustand)
+        return _r
+
+    def _wav_b64(sig, fs=8000):
+        sig = np.clip(sig / (np.max(np.abs(sig)) + 1e-9) * 0.85, -1, 1)
+        buf = _io.BytesIO()
+        with _wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(fs)
+            w.writeframes((sig * 32767).astype("<i2").tobytes())
+        return _b64.b64encode(buf.getvalue()).decode("ascii")
+
+    def _geraeusch(kavitation, fs=8000, dauer=3.0):
+        rng = np.random.default_rng(62 if kavitation else 26)
+        t = np.arange(int(fs * dauer)) / fs
+        brumm = 0.30 * np.sin(2 * np.pi * 100 * t) + 0.12 * np.sin(2 * np.pi * 50 * t)
+        rotor = 0.18 * np.sin(2 * np.pi * 2.5 * t) * np.sin(2 * np.pi * 180 * t)
+        rausch = 0.05 * rng.standard_normal(t.size)
+        sig = brumm + rotor + rausch
+        if kavitation:
+            knack = np.zeros(t.size)
+            idx = rng.choice(t.size, size=int(dauer * 90), replace=False)
+            knack[idx] = rng.uniform(0.6, 2.2, idx.size) * rng.choice([-1, 1], idx.size)
+            kern = np.exp(-np.arange(40) / 5.0) * np.sin(np.arange(40) * 1.9)
+            sig = 0.6 * sig + np.convolve(knack, kern, mode="same") + 0.25 * rng.standard_normal(t.size) * (0.6 + 0.4 * np.sin(2 * np.pi * 2.5 * t))
+        return _wav_b64(sig, fs)
+
+    DS_WAV = dict(normal=_geraeusch(False), kavitation=_geraeusch(True))
+    return DS_ANLAGE, DS_WAV, ds_betrieb
+
+
+@app.cell
 def _(mo):
     # === PERSISTENTER ZUSTAND mit mo.state ===
     get_sim_state, set_sim_state = mo.state(None)
@@ -1062,12 +1184,13 @@ def _(
     abschlag_schwelle, btn_1h, btn_24h, btn_6h, btn_7d, btn_reset,
     detail_p11, detail_p51,
     armatur_auswahl, wartung_btn,
+    DS_ANLAGE, DS_WAV, ds_betrieb,
     faellmittel, get_sim_state,
     lab_analyse_btn, lab_kal_btn, lab_show_isv, lab_show_proto, lab_show_qs, lab_woche_btn,
     mod_anammox, mod_intermit, mod_membran, mod_nh4_sensor,
     mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo,
     mo, np, o2_soll, pm, get_pk, kf_meldung,
-    kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
+    kf_ds, kf_ft, kf_ft_fu, kf_ft_n, kf_reset_btn, kf_rs, kf_rs_fu, kf_rs_n,
     kf_tal, kf_tal_fu, kf_tal_n, kf_umbau_btn,
     regen_faktor, rs_verhaeltnis, temperatur,
     ues_menge, zulauf_q,
@@ -1122,10 +1245,28 @@ def _(
         stunden = int(th % 24)
         sim_zeit = f"Tag {tage}, {stunden:02d}:00"
 
+        # === Dickschlammförderung VE-1 → FT-1 (P6.2) ===
+        # Feststoffbilanz: PS (TS 35 g/L) + ÜS (TS ≈ 1,2 × TS_BB) → Eindickung auf 50 g/L
+        _ds_fest = c["Q_zu"] * 0.005 * 35 + ues_menge.value * c["ts"] * 1.2          # kg TS/d
+        ds_bp = ds_betrieb(_ds_fest / 50 / 24, c["T"], ts_gl=50.0)
+        _ds_rng = np.random.default_rng(int(th * 7) + 62)
+        ds_kav = ds_bp["zustand"] == "kavitation"
+        ds_ps_anz = ds_bp["p_s"] + (_ds_rng.uniform(-0.03, 0.025) if ds_kav else _ds_rng.uniform(-0.004, 0.004))
+        ds_ps_anz = max(ds_bp["p_v"] - ds_bp["p_b"], ds_ps_anz)
+        ds_q_anz = ds_bp["q"] * (_ds_rng.uniform(0.75, 1.25) if ds_kav else _ds_rng.uniform(0.98, 1.02))
+        _ds_alarme = []
+        if ds_ps_anz < -0.60:
+            _ds_alarme.append(("⚠️", f"PI 612 Saugdruck P6.2 MIN: {ds_ps_anz:.2f} bar (Grenzwert −0,60 bar)"))
+        if ds_q_anz < 0.5 * ds_bp["q_soll"]:
+            _ds_alarme.append(("⚠️", f"FI 613 Dickschlamm Förderstrom < 50 % Soll: {ds_q_anz:.2f} m³/h (Soll {ds_bp['q_soll']:.2f} m³/h)"))
+        if ds_kav:
+            _ds_alarme.append(("🔴", "XA 615 Schwingungsüberwachung P6.2: Körperschall HOCH"))
+        _alarme_alle = list(st["alarme"]) + _ds_alarme
+
         # Alarme
-        if st["alarme"]:
+        if _alarme_alle:
             alm = '<div class="pls-c" style="border-color:#e94560"><h3 style="color:#e94560">⚡ Alarme & Meldungen</h3>'
-            for typ, msg in st["alarme"]:
+            for typ, msg in _alarme_alle:
                 alm += f'<div class="pls-alarm">{typ} {msg}</div>'
             alm += '</div>'
         else:
@@ -1678,12 +1819,12 @@ def _(
         ues_P = 3.0
         ues_bh = 9200 + th * 0.4
 
-        # Dickschlammpumpe (zur Entwässerung)
-        ds_Q_h = (ps_Q_h + ues_Q_h) * 0.8
+        # Dickschlammpumpe P6.2 (VE-1 → Faulturm), Betriebspunkt aus Saugseitenmodell
+        ds_Q_h = ds_q_anz
         ds_ts = 50  # g/L eingedickter Schlamm
-        ds_p = 4.5
-        ds_n = 150
-        ds_P = 4.0
+        ds_p = ds_bp["p_d"]
+        ds_n = round(ds_bp["n"])
+        ds_P = ds_bp["P1"]
         ds_bh = 6500 + th * 0.2
 
         # --- KOLBENMEMBRANPUMPEN ---
@@ -2019,7 +2160,7 @@ def _(
 
         <div class="pls-g3">
             <div class="pls-c">
-                <h3>Primärschlamm P2.1 {pump_status(True)}</h3>
+                <h3>Primärschlamm P6.1 {pump_status(True)}</h3>
                 <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">Seepex BN 35-6L – drehzahlgeregelt</p>
                 {vtbl(
                     vr("Förderstrom Q", f"{ps_Q_h:.2f}", "m³/h")
@@ -2030,7 +2171,7 @@ def _(
                     + vr("Betriebsstunden", f"{ps_bh:.0f}", "h")
                     + vr("Stator-Zustand", "gut", "", wh=99)
                 )}
-                {esp_svg("Primärschlammpumpe P2.1", ps_Q_h, ps_ts, ps_p, ps_n, ps_P)}
+                {esp_svg("Primärschlammpumpe P6.1", ps_Q_h, ps_ts, ps_p, ps_n, ps_P)}
             </div>
             <div class="pls-c">
                 <h3>Überschussschlamm P5.1 {pump_status(True)}</h3>
@@ -2046,19 +2187,24 @@ def _(
                 )}
                 {esp_svg("ÜS-Pumpe P5.1", ues_Q_h, ues_ts, ues_p, ues_n, ues_P)}
             </div>
-            <div class="pls-c">
-                <h3>Dickschlamm P6.1 {pump_status(ds_Q_h > 0.1)}</h3>
-                <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">Seepex BN 70-6L – drehzahlgeregelt</p>
+            <div class="pls-c" style="border-color:{'#e94560' if ds_kav else '#0f3460'}">
+                <h3>Dickschlamm P6.2 {pump_status(True)}</h3>
+                <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">Sulzer PC – FU-geregelt · VE-1 → FT-1<br>{ds_bp['ort']}, Pumpenachse {ds_bp['z_pumpe']:.2f}&ensp;m NN</p>
                 {vtbl(
-                    vr("Förderstrom Q", f"{ds_Q_h:.2f}", "m³/h")
+                    vr("Förderstrom Soll", f"{ds_bp['q_soll']:.2f}", "m³/h")
+                    + vr("Förderstrom Ist (FI 613)", f"{ds_Q_h:.2f}", "m³/h", dl=0.5 * ds_bp['q_soll'], wl=0.9 * ds_bp['q_soll'])
+                    + vr("Saugdruck (PI 612)", f"{ds_ps_anz:+.2f}", "bar", wl=-0.40, dl=-0.60)
+                    + vr("Enddruck (PI 614)", f"{ds_p:.2f}", "bar")
                     + vr("TS Dickschlamm", f"{ds_ts}", "g/L")
-                    + vr("Förderdruck", f"{ds_p:.1f}", "bar")
-                    + vr("Drehzahl", f"{ds_n}", "min⁻¹")
-                    + vr("Leistung P₁", f"{ds_P:.1f}", "kW")
+                    + vr("Drehzahl (FU)", f"{ds_n}", "min⁻¹")
+                    + vr("Leistung P₁", f"{ds_P:.2f}", "kW")
+                    + vr("Körperschall (XA 615)", '<span style="color:#e17055">HOCH</span>' if ds_kav else "normal", "")
                     + vr("Betriebsstunden", f"{ds_bh:.0f}", "h")
-                    + vr("Stator-Zustand", "gut", "", wh=99)
+                    + vr("Stator-Zustand", "Temperatur erhöht" if ds_kav else "gut", "", wh=99)
                 )}
-                {esp_svg("Dickschlammpumpe P6.1", ds_Q_h, ds_ts, ds_p, ds_n, ds_P)}
+                {esp_svg("Dickschlammpumpe P6.2", ds_Q_h, ds_ts, ds_p, ds_n, ds_P)}
+                <p style="font-size:0.8em;color:#b2bec3;margin:8px 0 2px">🎧 Geräuschaufnahme Rundgang (Mikrofon am Statorgehäuse):</p>
+                <audio controls preload="none" style="width:100%;height:32px" src="data:audio/wav;base64,{DS_WAV['kavitation'] if ds_kav else DS_WAV['normal']}"></audio>
             </div>
         </div>
 
@@ -2126,9 +2272,9 @@ def _(
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P10.1 Umwälz. FT</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">{ft_m1['q']:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P10.2 Umwälz. FT</td><td style="padding:5px 16px">Kreiselpumpe</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:right;padding:5px 16px">–</td><td style="text-align:center;padding:5px 16px">{pump_status_reserve()}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P4.1 Rez.</td><td style="padding:5px 16px">Propellerpumpe</td><td style="text-align:right;padding:5px 16px">{irez_Q_ist:.0f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{irez_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P2.1 PS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ps_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ps_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P6.1 PS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ps_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ps_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P5.1 ÜS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ues_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ues_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(True)}</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P6.1 DS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ds_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ds_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(ds_Q_h > 0.1)}</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P6.2 DS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ds_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ds_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(ds_Q_h > 0.1)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P7.1 Fe³⁺</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{fm_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{fm_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(fm_Q > 0)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P8.1 Poly</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{poly_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{poly_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(poly_Q > 0.5)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P9.1 Kalk</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{kalk_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{kalk_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(kalk_aktiv)}</td></tr>
@@ -2507,6 +2653,11 @@ def _(
                 <th style="padding:6px 12px;color:#74b9ff;text-align:left">Pumpe</th><th style="padding:6px 12px;color:#74b9ff;text-align:right">Laufrad</th>
                 <th style="padding:6px 12px;color:#74b9ff;text-align:left">Antrieb</th><th style="padding:6px 12px;color:#74b9ff;text-align:left">Stand</th></tr>
               {_kf_zeile("P-001", "PW Talstraße")}{_kf_zeile("P3.1", "RS-Pumpwerk")}{_kf_zeile("P10.1", "Faulturm-Umwälzung")}
+              <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 12px;white-space:nowrap">P6.2</td>
+                <td style="padding:5px 12px;white-space:nowrap">{ds_bp['ort']} ({ds_bp['z_pumpe']:.2f}&ensp;m NN)</td>
+                <td style="padding:5px 12px;white-space:nowrap">Sulzer PC</td><td style="padding:5px 12px;text-align:right">–</td>
+                <td style="padding:5px 12px;white-space:nowrap">FU</td>
+                <td style="padding:5px 12px;white-space:nowrap;color:#b2bec3">{"umgesetzt" if ds_bp['standort'] == "neu" else "Bestand"}</td></tr>
             </table>
             <p style="font-size:0.8em;color:#b2bec3;margin:8px 0 2px">Umbauprotokoll:</p>
             <ul style="font-size:0.8em;color:#dfe6e9;margin:0 0 0 18px;padding:0">
@@ -2545,7 +2696,7 @@ def _(
         </div>'''
         kf_tab = mo.vstack([
             mo.Html('''<div class="pls"><div class="pls-c" style="border-color:#0984e3"><h3 style="color:#74b9ff">🔧 Pumpentechnik – Umbauplanung</h3>
-                <p style="font-size:0.85em;color:#b2bec3;margin:0">Auswahl der Aggregate an den drei Standorten. Zur Auswahl stehen die Pumpen und
+                <p style="font-size:0.85em;color:#b2bec3;margin:0">Auswahl der Aggregate an den Pumpenstandorten. Zur Auswahl stehen die Pumpen und
                 Laufräder, für die Herstellerkennlinien vorliegen. Nach „Umbau durchführen“ arbeitet die Anlage mit der neuen Ausrüstung –
                 Messwerte, Betriebsstunden und Zähler zeigen den neuen Betrieb.</p>
                 <p style="font-size:0.85em;color:#b2bec3;margin:6px 0 0">Für das RS-Pumpwerk kann eine Sewabloc F 100-316 als Neupumpe
@@ -2557,6 +2708,8 @@ def _(
             mo.hstack([kf_rs, kf_rs_fu, kf_rs_n], justify="start", gap=1.5),
             mo.Html('<div class="pls"><div class="pls-c"><h3>Faulturm-Umwälzung – P10.1</h3></div></div>'),
             mo.hstack([kf_ft, kf_ft_fu, kf_ft_n], justify="start", gap=1.5),
+            mo.Html('<div class="pls"><div class="pls-c"><h3>Dickschlammförderung VE-1 → FT-1 – P6.2 (Sulzer PC)</h3></div></div>'),
+            mo.hstack([kf_ds], justify="start", gap=1.5),
             mo.hstack([kf_umbau_btn, kf_reset_btn], justify="start", gap=1),
             mo.Html(f'<div class="pls"><div class="pls-c" style="border-color:#fdcb6e;font-size:0.9em">{kf_meldung}</div></div>') if kf_meldung else mo.Html(""),
             mo.Html(f'<div class="pls">{kf_bestand_html}</div>'),
@@ -3035,6 +3188,58 @@ def _(
         ])
 
         # === FLIESSSCHEMA TAB ===
+        # Dickschlammförderung VE-1 → FT-1: Darstellung je nach Aufstellungsort P6.2
+        def _fs_esp(cx, cy, farbe="#907028"):
+            return (f'<rect x="{cx - 14}" y="{cy - 8}" width="28" height="16" rx="6" fill="#ffffff" stroke="{farbe}" stroke-width="1.5"/>'
+                    f'<path d="M {cx - 10},{cy} Q {cx - 6},{cy - 7} {cx},{cy} Q {cx + 6},{cy + 7} {cx + 10},{cy}" fill="none" stroke="{farbe}" stroke-width="1.8" stroke-linecap="round"/>'
+                    f'<line x1="{cx}" y1="{cy - 8}" x2="{cx}" y2="{cy - 14}" stroke="#507090" stroke-width="1.5"/>'
+                    f'<rect x="{cx - 6}" y="{cy - 23}" width="12" height="9" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>'
+                    f'<text x="{cx}" y="{cy - 16}" text-anchor="middle" fill="#304060" font-size="6.5">M</text>')
+
+        def _fs_msr(cx, cy, tag, nr, x1, y1, x2, y2):
+            # Messstelle mit Wirklinie von (x1, y1) am Kreisrand zum Messort (x2, y2)
+            return (f'<circle cx="{cx}" cy="{cy}" r="10" fill="#ffffff" stroke="#806030" stroke-width="1.2"/>'
+                    f'<text x="{cx}" y="{cy - 2}" text-anchor="middle" fill="#7a5020" font-size="7">{tag}</text>'
+                    f'<text x="{cx}" y="{cy + 6}" text-anchor="middle" fill="#503810" font-size="6">{nr}</text>'
+                    f'<line class="p-sig" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}"/>')
+
+        def _fs_sv_v(cx, cy):
+            return (f'<path d="M {cx - 5},{cy - 6} L {cx},{cy} L {cx + 5},{cy - 6} Z" fill="#506080"/>'
+                    f'<path d="M {cx - 5},{cy + 6} L {cx},{cy} L {cx + 5},{cy + 6} Z" fill="#506080"/>')
+
+        def _fs_sv_h(cx, cy):
+            return (f'<path d="M {cx - 6},{cy - 5} L {cx},{cy} L {cx - 6},{cy + 5} Z" fill="#506080"/>'
+                    f'<path d="M {cx + 6},{cy - 5} L {cx},{cy} L {cx + 6},{cy + 5} Z" fill="#506080"/>')
+
+        _gh = ('<rect x="1118" y="490" width="114" height="92" rx="2" fill="none" stroke="#1a3050" stroke-width="1" stroke-dasharray="5,3"/>'
+               '<text x="1175" y="500" text-anchor="middle" fill="#1a3050" font-size="7" font-weight="bold">GERÄTEHAUS SCHLAMM</text>'
+               '<text x="1175" y="509" text-anchor="middle" fill="#1a3050" font-size="6.5">FFB 361,00 m NN</text>')
+        if ds_bp["standort"] == "neu":
+            fs_p62 = (_gh
+                + '<rect x="1014" y="532" width="98" height="80" rx="2" fill="none" stroke="#1a3050" stroke-width="1" stroke-dasharray="5,3"/>'
+                + '<text x="1063" y="600" text-anchor="middle" fill="#1a3050" font-size="6.5" font-weight="bold">PUMPENRAUM VE-1</text>'
+                + '<text x="1063" y="608" text-anchor="middle" fill="#1a3050" font-size="6">FFB 350,80 m NN</text>'
+                + '<path class="p-ues" d="M 1065,526 L 1065,560 L 1066,560"/>'
+                + _fs_sv_v(1065, 538)
+                + _fs_esp(1080, 560)
+                + '<text x="1080" y="578" text-anchor="middle" fill="#907028" font-size="7.5">P6.2</text>'
+                + '<text x="1080" y="587" text-anchor="middle" fill="#503810" font-size="6.5">Sulzer PC</text>'
+                + _fs_msr(1038, 548, "PI", "612", 1048, 548, 1065, 548)
+                + _fs_msr(1102, 546, "PI", "614", 1102, 556, 1102, 560)
+                + _fs_msr(1032, 576, "XA", "615", 1041, 572, 1066, 566)
+                + '<path class="p-ues" d="M 1094,560 L 1122,560 L 1122,540 L 1280,540"/>')
+        else:
+            fs_p62 = (_gh
+                + '<path class="p-ues" d="M 1065,526 L 1065,540 L 1160,540"/>'
+                + _fs_sv_h(1130, 540)
+                + _fs_esp(1174, 540)
+                + '<text x="1174" y="560" text-anchor="middle" fill="#907028" font-size="7.5">P6.2</text>'
+                + '<text x="1174" y="569" text-anchor="middle" fill="#503810" font-size="6.5">Sulzer PC</text>'
+                + _fs_msr(1146, 522, "PI", "612", 1146, 532, 1146, 540)
+                + _fs_msr(1208, 522, "PI", "614", 1208, 532, 1208, 540)
+                + _fs_msr(1214, 564, "XA", "615", 1205, 560, 1188, 546)
+                + '<path class="p-ues" d="M 1188,540 L 1280,540"/>')
+
         fliessschema = mo.Html('''<div style="background:#f0f4f8; border-radius:8px; padding:10px; overflow:auto;">
 <style>
   .p-aw   { stroke:#1e90e8; stroke-width:3;   fill:none; }
@@ -3047,7 +3252,7 @@ def _(
   .p-sig  { stroke:#486880; stroke-width:0.9; fill:none; stroke-dasharray:3,3; }
   .p-ir   { stroke:#9050d8; stroke-width:1.8; fill:none; stroke-dasharray:6,3; }
 </style>
-<svg viewBox="0 0 1600 950" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1600 1245" xmlns="http://www.w3.org/2000/svg">
 <defs>
   <marker id="aaw"  markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#1e90e8"/></marker>
   <marker id="ars"  markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#8a5010"/></marker>
@@ -3060,20 +3265,20 @@ def _(
 </defs>
 
 <!-- HINTERGRUND -->
-<rect width="1600" height="950" fill="#f0f4f8"/>
+<rect width="1600" height="1245" fill="#f0f4f8"/>
 
 <!-- TITELBLOCK -->
 <rect x="5" y="4" width="1590" height="42" rx="3" fill="#ffffff" stroke="#1e3050" stroke-width="1.2"/>
 <text x="16" y="22" fill="#0c4fa0" font-size="13.5" font-weight="bold">R&amp;I-FLIESSSCHEMA – KLÄRANLAGE SCHWIERBACH</text>
 <text x="16" y="37" fill="#1a3050" font-size="8.5">Mechanisch-Biologische Reinigung mit N/P-Elimination und Schlammfaulung | 50.000 EW | Q_TW = 12.000 m³/d | Q_max = 30.000 m³/d | angelehnt an DIN EN ISO 10628-2</text>
-<text x="1588" y="22" fill="#1a3050" font-size="8" text-anchor="end">2026-09 | Rev.02</text>
+<text x="1588" y="22" fill="#1a3050" font-size="8" text-anchor="end">2026-09 | Rev.03</text>
 
 <!-- STUFENRAHMEN -->
-<rect x="6"   y="52" width="430" height="390" rx="4" fill="#edf2f8" stroke="#1a3050" stroke-width="1" stroke-dasharray="7,4"/>
+<rect x="6"   y="52" width="430" height="424" rx="4" fill="#edf2f8" stroke="#1a3050" stroke-width="1" stroke-dasharray="7,4"/>
 <text x="221" y="65" text-anchor="middle" fill="#0e2040" font-size="8.5" letter-spacing="2">MECHANISCHE REINIGUNGSSTUFE</text>
-<rect x="440" y="52" width="355" height="390" rx="4" fill="#edf7f0" stroke="#1a4828" stroke-width="1" stroke-dasharray="7,4"/>
+<rect x="440" y="52" width="355" height="424" rx="4" fill="#edf7f0" stroke="#1a4828" stroke-width="1" stroke-dasharray="7,4"/>
 <text x="617" y="65" text-anchor="middle" fill="#1a4028" font-size="8.5" letter-spacing="2">BIOLOGISCHE STUFE</text>
-<rect x="799" y="52" width="195" height="390" rx="4" fill="#fdf8ee" stroke="#604c10" stroke-width="1" stroke-dasharray="7,4"/>
+<rect x="799" y="52" width="195" height="424" rx="4" fill="#fdf8ee" stroke="#604c10" stroke-width="1" stroke-dasharray="7,4"/>
 <text x="896" y="65" text-anchor="middle" fill="#403808" font-size="8.5" letter-spacing="2">NACHKLÄRUNG</text>
 <rect x="998" y="52" width="225" height="390" rx="4" fill="#edf8f3" stroke="#184828" stroke-width="1" stroke-dasharray="7,4"/>
 <text x="1110" y="65" text-anchor="middle" fill="#1a4830" font-size="8.5" letter-spacing="2">ABLAUF / MESSSCHACHT</text>
@@ -3158,9 +3363,16 @@ def _(
 <text x="227" y="231" text-anchor="middle" fill="#1a3870" font-size="7.5">R1.1</text>
 <text x="227" y="222" text-anchor="middle" fill="#182848" font-size="7">Rechen</text>
 <line class="p-aw" x1="208" y1="280" x2="246" y2="280"/>
+<!-- WP1.1 Rechengutwaschpresse mit Förderschnecke -->
 <line x1="227" y1="320" x2="227" y2="338" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
-<rect x="220" y="338" width="14" height="10" rx="2" fill="#0c0a08" stroke="#383028" stroke-width="1"/>
-<text x="227" y="347" text-anchor="middle" fill="#f0e8d8" font-size="6.5">Gut</text>
+<rect x="208" y="338" width="38" height="12" rx="2" fill="#ffffff" stroke="#304060" stroke-width="1.2"/>
+<polyline points="211,347 215,341 219,347 223,341 227,347 231,341 235,347 239,341 243,347" fill="none" stroke="#304060" stroke-width="1"/>
+<rect x="200" y="339" width="8" height="10" rx="1" fill="#e8edf8" stroke="#203050" stroke-width="0.9"/>
+<text x="204" y="346.5" text-anchor="middle" fill="#304060" font-size="5.5">M</text>
+<text x="222" y="360" text-anchor="middle" fill="#1a3870" font-size="7">WP1.1</text>
+<line x1="242" y1="350" x2="242" y2="372" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
+<path d="M 226,372 L 248,372 L 245,386 L 229,386 Z" fill="#dcd4c4" stroke="#383028" stroke-width="1"/>
+<text x="236" y="395" text-anchor="middle" fill="#382810" font-size="5.5">Rechengut</text>
 
 <!-- ═══ SANDFANG ═══ -->
 <rect x="250" y="196" width="130" height="208" rx="3" fill="#f5f8fa" stroke="#1e3060" stroke-width="1.5"/>
@@ -3177,8 +3389,16 @@ def _(
 <line class="p-sig" x1="315" y1="188" x2="315" y2="196"/>
 <line class="p-aw" x1="246" y1="280" x2="250" y2="280"/>
 <line class="p-aw" x1="380" y1="280" x2="388" y2="280" marker-end="url(#aaw)"/>
-<line x1="315" y1="404" x2="315" y2="420" stroke="#483820" stroke-width="1.5" stroke-dasharray="4,2"/>
-<text x="315" y="430" text-anchor="middle" fill="#382810" font-size="7">Sand → Entsorgung</text>
+<!-- SK2.1 Sandklassierer (Schneckenklassierer) -->
+<line x1="315" y1="404" x2="315" y2="418" stroke="#483820" stroke-width="1.5" stroke-dasharray="4,2"/>
+<rect x="296" y="418" width="38" height="14" rx="1" fill="#ffffff" stroke="#304060" stroke-width="1.2"/>
+<path d="M 328,432 L 370,410 L 376,420 L 334,440 Z" fill="#ffffff" stroke="#304060" stroke-width="1.2"/>
+<polyline points="336,433 342,426 346,433 352,423 356,430 362,420 366,427" fill="none" stroke="#304060" stroke-width="0.9"/>
+<line x1="374" y1="418" x2="374" y2="440" stroke="#483820" stroke-width="1.2" stroke-dasharray="3,2"/>
+<path d="M 362,440 L 386,440 L 383,454 L 365,454 Z" fill="#dcd4c4" stroke="#383028" stroke-width="1"/>
+<text x="312" y="446" text-anchor="middle" fill="#1a3870" font-size="7">SK2.1</text>
+<text x="312" y="455" text-anchor="middle" fill="#182848" font-size="6.5">Sandklassierer</text>
+<text x="374" y="463" text-anchor="middle" fill="#382810" font-size="6">Sand</text>
 
 <!-- ═══ VORKLÄRUNG ═══ -->
 <rect x="388" y="196" width="58" height="208" rx="3" fill="#f5f7fb" stroke="#203060" stroke-width="1.5"/>
@@ -3217,7 +3437,7 @@ def _(
 <text x="417" y="443" text-anchor="middle" fill="#5020a0" font-size="7.5">P6.1</text>
 <text x="417" y="452" text-anchor="middle" fill="#2a10a0" font-size="7">Primärschl.</text>
 <!-- Primärschlamm-Leitung seitlich zum Eindicker (rechts neben NK) -->
-<path class="p-ues" d="M 417,434 L 417,468 L 990,468 L 990,432" marker-end="url(#aues)"/>
+<path class="p-ues" d="M 417,434 L 417,468 L 1030,468" marker-end="url(#aues)"/>
 <text x="660" y="460" text-anchor="middle" fill="#6a5008" font-size="7.5">Primärschlamm PS</text>
 
 <!-- ═══ GEBLÄSESTATION ═══ -->
@@ -3329,11 +3549,11 @@ def _(
 <!-- AW in/aus BB -->
 <line class="p-aw" x1="516" y1="280" x2="450" y2="280"/>
 <line class="p-aw" x1="760" y1="280" x2="800" y2="280" marker-end="url(#aaw)"/>
-<!-- Interne Rezirkulation P2.1 -->
+<!-- Interne Rezirkulation P4.1 -->
 <path class="p-ir" d="M 748,196 L 748,158 L 476,158 L 476,183" marker-end="url(#air)"/>
 <circle cx="614" cy="158" r="10" fill="#ffffff" stroke="#8040c0" stroke-width="1.4"/>
 <path d="M 608,153 L 622,158 L 608,163 Z" fill="#6020a8"/>
-<text x="614" y="148" text-anchor="middle" fill="#6020a8" font-size="7.5">P2.1</text>
+<text x="614" y="148" text-anchor="middle" fill="#6020a8" font-size="7.5">P4.1</text>
 <text x="640" y="148" fill="#2a10a0" font-size="7">Int.Rez.</text>
 
 <!-- ═══ NACHKLÄRBECKEN (Kreis r=70) ═══ -->
@@ -3415,19 +3635,41 @@ def _(
 
 <!-- ═══ SCHLAMMBEHANDLUNG ═══ -->
 <!-- Eindicker rechts neben NK, unter P5.1 und PS-Leitung -->
-<path class="p-ues" d="M 1004,390 L 1060,390 L 1060,418" marker-end="url(#aues)"/>
-<rect x="1024" y="418" width="100" height="50" rx="3" fill="#f0f5ee" stroke="#384810" stroke-width="1.2" stroke-dasharray="5,3"/>
-<text x="1074" y="435" text-anchor="middle" fill="#303810" font-size="8">Eindicker /</text>
-<text x="1074" y="447" text-anchor="middle" fill="#303810" font-size="8">Schlammstapel</text>
-<text x="1074" y="459" text-anchor="middle" fill="#202808" font-size="7.5">PS + ÜS → Faulturm</text>
+<path class="p-ues" d="M 1004,390 L 1044,390 L 1044,452" marker-end="url(#aues)"/>
+<!-- VE-1 Voreindicker (statischer Eindicker mit Krählwerk) -->
+<rect x="1031" y="462" width="68" height="44" fill="#d8ccb0" fill-opacity="0.45"/>
+<path d="M 1031,506 L 1065,525 L 1099,506 Z" fill="#b8a478" fill-opacity="0.45"/>
+<path d="M 1030,452 L 1030,506 L 1065,526 L 1100,506 L 1100,452" fill="none" stroke="#384810" stroke-width="1.6"/>
+<line x1="1032" y1="462" x2="1098" y2="462" stroke="#384810" stroke-width="0.8" stroke-dasharray="4,2"/>
+<rect x="1059" y="440" width="12" height="10" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
+<text x="1065" y="448" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
+<line x1="1065" y1="450" x2="1065" y2="516" stroke="#304060" stroke-width="1.3"/>
+<line x1="1050" y1="512" x2="1080" y2="512" stroke="#304060" stroke-width="1.8"/>
+<line x1="1054" y1="506" x2="1054" y2="512" stroke="#304060" stroke-width="1"/>
+<line x1="1060" y1="506" x2="1060" y2="512" stroke="#304060" stroke-width="1"/>
+<line x1="1070" y1="506" x2="1070" y2="512" stroke="#304060" stroke-width="1"/>
+<line x1="1076" y1="506" x2="1076" y2="512" stroke="#304060" stroke-width="1"/>
+<text x="1082" y="478" text-anchor="middle" fill="#303810" font-size="8" font-weight="bold">VE-1</text>
+<text x="1082" y="488" text-anchor="middle" fill="#303810" font-size="6.5">Vorein-</text>
+<text x="1082" y="496" text-anchor="middle" fill="#303810" font-size="6.5">dicker</text>
+<text x="1103" y="464" fill="#303810" font-size="6.5">▽ BS 352,50</text>
+<path class="p-ab" d="M 1100,472 L 1112,472" style="stroke-width:1.4"/>
+<text x="1114" y="475" fill="#106030" font-size="6.5">Trübwasser → HW</text>
+<text x="1026" y="522" text-anchor="end" fill="#303810" font-size="7">GOK 352,50 m NN</text>
 
 
 <!-- ═══ SCHLAMMFAULUNG (Rev.02) ═══ -->
-<rect x="1227" y="168" width="367" height="274" rx="4" fill="#f7f4ee" stroke="#5a4020" stroke-width="1" stroke-dasharray="7,4"/>
-<text x="1410" y="181" text-anchor="middle" fill="#403010" font-size="8.5" letter-spacing="2">SCHLAMMFAULUNG</text>
+<path d="M 1227,168 L 1454,168 L 1454,56 L 1594,56 L 1594,442 L 1227,442 Z" fill="#f7f4ee" stroke="#5a4020" stroke-width="1" stroke-dasharray="7,4"/>
+<text x="1340" y="181" text-anchor="middle" fill="#403010" font-size="8.5" letter-spacing="2">SCHLAMMFAULUNG</text>
+<text x="1524" y="68" text-anchor="middle" fill="#403010" font-size="7.5" letter-spacing="1.5">GASVERWERTUNG</text>
 <!-- Dickschlamm Eindicker → Faulturm -->
-<path class="p-ues" d="M 1124,430 L 1280,430 L 1280,250 L 1290,250" marker-end="url(#aues)"/>
-<text x="1180" y="425" text-anchor="middle" fill="#806018" font-size="7.5">Dickschlamm</text>
+<!--P62_BLOCK-->
+<path class="p-ues" d="M 1280,540 L 1280,250 L 1290,250" marker-end="url(#aues)"/>
+<text x="1256" y="534" text-anchor="middle" fill="#806018" font-size="7">Dickschlamm</text>
+<circle cx="1302" cy="470" r="10" fill="#ffffff" stroke="#806030" stroke-width="1.2"/>
+<text x="1302" y="468" text-anchor="middle" fill="#7a5020" font-size="7">FI</text>
+<text x="1302" y="476" text-anchor="middle" fill="#503810" font-size="6">613</text>
+<line class="p-sig" x1="1292" y1="470" x2="1280" y2="470"/>
 <!-- Faulturm FT-1 -->
 <path d="M 1290,215 Q 1330,190 1370,215 L 1370,345 L 1330,385 L 1290,345 Z" fill="#f3efe4" stroke="#4a3a10" stroke-width="1.8"/>
 <line x1="1292" y1="226" x2="1368" y2="226" stroke="#6a5a30" stroke-width="0.8" stroke-dasharray="4,3"/>
@@ -3436,14 +3678,35 @@ def _(
 <text x="1330" y="298" text-anchor="middle" fill="#4a3a18" font-size="7.5">2.200 m³</text>
 <text x="1330" y="310" text-anchor="middle" fill="#4a3a18" font-size="7.5">mesophil 37 °C</text>
 <!-- Faulgas → BHKW -->
-<path d="M 1330,202 L 1330,190 L 1522,190" fill="none" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<path d="M 1330,202 L 1330,190 L 1506,190 L 1506,150" fill="none" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<!-- GS-1 Doppelmembran-Gasspeicher -->
+<path d="M 1480,150 L 1480,126 Q 1507,96 1534,126 L 1534,150 Z" fill="#fffaf0" stroke="#8a6010" stroke-width="1.5"/>
+<path d="M 1484,138 Q 1507,112 1530,138" fill="none" stroke="#8a6010" stroke-width="0.9" stroke-dasharray="3,2"/>
+<text x="1507" y="136" text-anchor="middle" fill="#6a4808" font-size="7.5" font-weight="bold">GS-1</text>
+<text x="1507" y="146" text-anchor="middle" fill="#6a4808" font-size="6">Gasspeicher</text>
+<circle cx="1507" cy="84" r="10" fill="#ffffff" stroke="#8a6010" stroke-width="1.2"/>
+<text x="1507" y="82" text-anchor="middle" fill="#8a6010" font-size="7">LI</text>
+<text x="1507" y="90" text-anchor="middle" fill="#5a4008" font-size="6">609</text>
+<line class="p-sig" x1="1507" y1="94" x2="1507" y2="110"/>
+<!-- V6.1 Gasverdichter -->
+<path d="M 1534,140 L 1550,140" fill="none" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<circle cx="1560" cy="140" r="10" fill="#ffffff" stroke="#8a6010" stroke-width="1.5"/>
+<line x1="1552" y1="134" x2="1568" y2="137" stroke="#8a6010" stroke-width="1.2"/>
+<line x1="1552" y1="146" x2="1568" y2="143" stroke="#8a6010" stroke-width="1.2"/>
+<text x="1575" y="130" fill="#6a4808" font-size="7">V6.1</text>
+<path d="M 1560,150 L 1560,178" fill="none" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<!-- F6.1 Gasfackel (Überschussgas) -->
+<path d="M 1466,190 L 1466,160" fill="none" stroke="#c8a020" stroke-width="1.6" stroke-dasharray="6,3"/>
+<rect x="1462" y="122" width="8" height="38" fill="#ffffff" stroke="#5a4020" stroke-width="1.2"/>
+<path d="M 1466,121 Q 1459,112 1466,102 Q 1473,112 1466,121 Z" fill="#e07020" fill-opacity="0.75" stroke="#c03020" stroke-width="0.8"/>
+<text x="1458" y="176" text-anchor="end" fill="#6a4808" font-size="7">F6.1</text>
 <rect x="1522" y="178" width="66" height="24" rx="2" fill="#fffaf0" stroke="#8a6010" stroke-width="1.2"/>
 <text x="1555" y="189" text-anchor="middle" fill="#6a4808" font-size="8" font-weight="bold">BHKW</text>
 <text x="1555" y="198" text-anchor="middle" fill="#6a4808" font-size="6.5">Faulgas</text>
-<circle cx="1500" cy="207" r="10" fill="#ffffff" stroke="#8a6010" stroke-width="1.2"/>
-<text x="1500" y="205" text-anchor="middle" fill="#8a6010" font-size="7">FI</text>
-<text x="1500" y="213" text-anchor="middle" fill="#5a4008" font-size="6">608</text>
-<line class="p-sig" x1="1500" y1="197" x2="1500" y2="190"/>
+<circle cx="1430" cy="206" r="10" fill="#ffffff" stroke="#8a6010" stroke-width="1.2"/>
+<text x="1430" y="204" text-anchor="middle" fill="#8a6010" font-size="7">FI</text>
+<text x="1430" y="212" text-anchor="middle" fill="#5a4008" font-size="6">608</text>
+<line class="p-sig" x1="1430" y1="196" x2="1430" y2="190"/>
 <!-- Umwälzkreis: Konus → P10.1/P10.2 → W10.1 → Faulturm -->
 <path d="M 1330,385 L 1330,413 L 1372,413" fill="none" stroke="#7a5018" stroke-width="2"/>
 <line x1="1372" y1="396" x2="1372" y2="430" stroke="#7a5018" stroke-width="2"/>
@@ -3499,8 +3762,39 @@ def _(
 <text x="1495" y="431" text-anchor="middle" fill="#503810" font-size="6">603</text>
 <line class="p-sig" x1="1485" y1="422" x2="1470" y2="413"/>
 <!-- Faulschlamm → Entwässerung -->
-<path class="p-ues" d="M 1330,413 L 1330,462 L 1236,462" marker-end="url(#aues)"/>
-<text x="1240" y="474" fill="#806018" font-size="7.5">Faulschlamm → Entwässerung</text>
+<path class="p-ues" d="M 1330,413 L 1330,540 L 1362,540"/>
+<text x="1344" y="532" text-anchor="middle" fill="#806018" font-size="6.5">FS</text>
+<!-- P6.3 Beschickungspumpe Zentrifuge (ESP) -->
+<rect x="1362" y="532" width="28" height="16" rx="6" fill="#ffffff" stroke="#907028" stroke-width="1.5"/>
+<path d="M 1366,540 Q 1370,533 1376,540 Q 1382,547 1386,540" fill="none" stroke="#907028" stroke-width="1.8" stroke-linecap="round"/>
+<line x1="1376" y1="532" x2="1376" y2="526" stroke="#507090" stroke-width="1.5"/>
+<rect x="1370" y="517" width="12" height="9" rx="1.5" fill="#e8edf8" stroke="#203050" stroke-width="1"/>
+<text x="1376" y="525" text-anchor="middle" fill="#304060" font-size="6.5">M</text>
+<text x="1376" y="560" text-anchor="middle" fill="#907028" font-size="7.5">P6.3</text>
+<path class="p-ues" d="M 1390,540 L 1420,540" marker-end="url(#aues)"/>
+<!-- Polymer P8.1 -->
+<path class="p-fm" d="M 1406,508 L 1406,538"/>
+<circle cx="1406" cy="540" r="2.5" fill="#8060c0"/>
+<text x="1406" y="503" text-anchor="middle" fill="#4010a0" font-size="6.5">Polymer P8.1</text>
+<!-- Z6.1 Zentrifuge (Dekanter) -->
+<path d="M 1420,530 L 1468,530 L 1486,535 L 1486,545 L 1468,550 L 1420,550 Z" fill="#ffffff" stroke="#304060" stroke-width="1.5"/>
+<line x1="1424" y1="540" x2="1482" y2="540" stroke="#304060" stroke-width="0.9" stroke-dasharray="3,2"/>
+<text x="1450" y="562" text-anchor="middle" fill="#1a3870" font-size="7.5">Z6.1</text>
+<text x="1450" y="571" text-anchor="middle" fill="#182848" font-size="6.5">Zentrifuge</text>
+<path class="p-aw" d="M 1428,550 L 1428,582 L 1352,582" style="stroke-width:1.4" marker-end="url(#aaw)"/>
+<text x="1348" y="585" text-anchor="end" fill="#1050a0" font-size="6.5">Zentrat → HW</text>
+<!-- FS6.1 Förderschnecke Schlammkuchen -->
+<line x1="1486" y1="540" x2="1494" y2="552" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
+<path d="M 1490,552 L 1544,512 L 1550,520 L 1496,560 Z" fill="#ffffff" stroke="#304060" stroke-width="1.2"/>
+<polyline points="1498,551 1502,542 1508,546 1512,537 1518,541 1522,532 1528,536 1532,527 1538,531 1542,522" fill="none" stroke="#304060" stroke-width="0.9"/>
+<text x="1500" y="578" text-anchor="middle" fill="#1a3870" font-size="7">FS6.1</text>
+<!-- SI6.1 Schlammsilo -->
+<line x1="1548" y1="514" x2="1560" y2="514" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
+<path d="M 1558,508 L 1558,552 L 1574,566 L 1590,552 L 1590,508 Z" fill="#dcd4c4" stroke="#383028" stroke-width="1.2"/>
+<text x="1574" y="528" text-anchor="middle" fill="#382810" font-size="7" font-weight="bold">SI6.1</text>
+<text x="1574" y="538" text-anchor="middle" fill="#382810" font-size="6">Silo</text>
+<line x1="1574" y1="566" x2="1574" y2="578" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
+<text x="1590" y="588" text-anchor="end" fill="#382810" font-size="6.5">→ Verwertung</text>
 
 <!-- ═══ MESSSCHACHT / ABLAUF ═══ -->
 <rect x="1010" y="248" width="90" height="88" rx="3" fill="#edf8f3" stroke="#1a5030" stroke-width="1.5"/>
@@ -3545,10 +3839,11 @@ def _(
 <!-- ══════════════════════════════════════════════════════ -->
 <!--   UNTERER BEREICH                                      -->
 <!-- ══════════════════════════════════════════════════════ -->
+<g transform="translate(0,140)">
 <rect x="6" y="474" width="1588" height="2" fill="#0e2040" fill-opacity="0.4"/>
 
 <!-- ─── LEGENDE ─── -->
-<rect x="6" y="480" width="450" height="424" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
+<rect x="6" y="480" width="450" height="579" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
 <text x="231" y="496" text-anchor="middle" fill="#1a4080" font-size="10" font-weight="bold">LEGENDE</text>
 
 <text x="18" y="514" fill="#1a4080" font-size="8.5" font-weight="bold">Rohrleitungen:</text>
@@ -3623,8 +3918,35 @@ def _(
 <text x="256" y="812" text-anchor="middle" fill="#6a5208" font-size="7" font-weight="bold">G</text>
 <text x="274" y="812" fill="#0e2040" font-size="8">Drehkolbengebläse</text>
 
+<!-- Förderschnecke / Waschpresse -->
+<rect x="28" y="836" width="26" height="10" rx="2" fill="#ffffff" stroke="#304060" stroke-width="1.2"/>
+<polyline points="31,844 35,838 39,844 43,838 47,844 51,838" fill="none" stroke="#304060" stroke-width="0.9"/>
+<text x="60" y="844" fill="#0e2040" font-size="8">Förderschnecke / Waschpresse</text>
+<!-- Zentrifuge -->
+<path d="M 28,862 L 48,862 L 56,865 L 56,871 L 48,874 L 28,874 Z" fill="#ffffff" stroke="#304060" stroke-width="1.3"/>
+<text x="60" y="871" fill="#0e2040" font-size="8">Zentrifuge (Dekanter)</text>
+<!-- Container -->
+<path d="M 32,890 L 50,890 L 47,902 L 35,902 Z" fill="#dcd4c4" stroke="#383028" stroke-width="1"/>
+<text x="60" y="899" fill="#0e2040" font-size="8">Container / Mulde</text>
+<!-- Gasspeicher -->
+<path d="M 244,850 L 244,840 Q 256,826 268,840 L 268,850 Z" fill="#fffaf0" stroke="#8a6010" stroke-width="1.3"/>
+<text x="274" y="847" fill="#0e2040" font-size="8">Gasspeicher (Doppelmembran)</text>
+<!-- Verdichter -->
+<circle cx="256" cy="868" r="9" fill="#ffffff" stroke="#8a6010" stroke-width="1.4"/>
+<line x1="249" y1="863" x2="263" y2="866" stroke="#8a6010" stroke-width="1.1"/>
+<line x1="249" y1="873" x2="263" y2="870" stroke="#8a6010" stroke-width="1.1"/>
+<text x="274" y="871" fill="#0e2040" font-size="8">Verdichter</text>
+<!-- Fackel -->
+<rect x="253" y="892" width="6" height="16" fill="#ffffff" stroke="#5a4020" stroke-width="1.1"/>
+<path d="M 256,891 Q 251,885 256,878 Q 261,885 256,891 Z" fill="#e07020" fill-opacity="0.75" stroke="#c03020" stroke-width="0.7"/>
+<text x="274" y="900" fill="#0e2040" font-size="8">Gasfackel</text>
+<line x1="18" y1="922" x2="72" y2="922" stroke="#c8a020" stroke-width="1.8" stroke-dasharray="8,3"/>
+<text x="80" y="926" fill="#0e2040" font-size="8.5">Faulgas</text>
+<line x1="18" y1="940" x2="72" y2="940" stroke="#383028" stroke-width="1.2" stroke-dasharray="3,2"/>
+<text x="80" y="944" fill="#0e2040" font-size="8.5">Feststoffaustrag (Rechengut, Sand, Kuchen)</text>
+
 <!-- ─── AGGREGATLISTE ─── -->
-<rect x="462" y="480" width="570" height="424" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
+<rect x="462" y="480" width="570" height="579" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
 <text x="747" y="496" text-anchor="middle" fill="#1a4080" font-size="10" font-weight="bold">AGGREGATLISTE (Kurzform)</text>
 <rect x="468" y="503" width="558" height="15" fill="#dce4f0"/>
 <text x="476" y="514" fill="#1a4080" font-size="8" font-weight="bold">KKS</text>
@@ -3635,7 +3957,7 @@ def _(
   <line x1="468" y1="535" x2="1026" y2="535" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="547">P1.2</text><text x="514" y="547">Zulaufpumpe (Reserve)</text><text x="780" y="547">Tauchmotorpumpe KP</text>
   <line x1="468" y1="551" x2="1026" y2="551" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="563">P2.1</text><text x="514" y="563">Interne Rezirkulation Nitri→Deni, FU</text><text x="780" y="563">Axialpumpe/KP, ~2 × Q_ZU</text>
+  <text x="476" y="563">P4.1</text><text x="514" y="563">Interne Rezirkulation Nitri→Deni, FU</text><text x="780" y="563">Axialpumpe/KP, ~2 × Q_ZU</text>
   <line x1="468" y1="567" x2="1026" y2="567" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="579">P3.1–3.6</text><text x="514" y="579">Rücklaufschlammpumpen, Stufenschaltung</text><text x="780" y="579">6 × KSB Sewabloc F 100-252</text>
   <line x1="468" y1="583" x2="1026" y2="583" stroke="#dce4f0" stroke-width="0.7"/>
@@ -3657,23 +3979,51 @@ def _(
   <line x1="468" y1="711" x2="1026" y2="711" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="723">R1.1</text><text x="514" y="723">Siebrechenanlage (mech. Reinigung)</text><text x="780" y="723">Treppenrechen / Bürstenrechen</text>
   <line x1="468" y1="727" x2="1026" y2="727" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="739">P6.2</text><text x="514" y="739">Dickschlammpumpe VE-1 → FT-1, FU</text><text x="780" y="739">Sulzer PC, ESP</text>
+  <line x1="468" y1="743" x2="1026" y2="743" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="755">P6.3</text><text x="514" y="755">Beschickungspumpe Zentrifuge, FU</text><text x="780" y="755">Exzenterschneckenpumpe ESP</text>
+  <line x1="468" y1="759" x2="1026" y2="759" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="771">P8.1</text><text x="514" y="771">Polymerdosierung Entwässerung (FHM)</text><text x="780" y="771">ProMinent Sigma S1Cb, KMP</text>
+  <line x1="468" y1="775" x2="1026" y2="775" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="787">WP1.1</text><text x="514" y="787">Rechengutwaschpresse mit Förderschnecke</text><text x="780" y="787">Waschpresse → Container</text>
+  <line x1="468" y1="791" x2="1026" y2="791" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="803">SK2.1</text><text x="514" y="803">Sandklassierer (Sandfanggut)</text><text x="780" y="803">Schneckenklassierer → Container</text>
+  <line x1="468" y1="807" x2="1026" y2="807" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="819">VE-1</text><text x="514" y="819">Voreindicker mit Krählwerk (Rev.03)</text><text x="780" y="819">Rundbecken, statisch</text>
+  <line x1="468" y1="823" x2="1026" y2="823" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="835">Z6.1</text><text x="514" y="835">Zentrifuge Schlammentwässerung</text><text x="780" y="835">Dekanter, Polymerkonditionierung</text>
+  <line x1="468" y1="839" x2="1026" y2="839" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="851">FS6.1</text><text x="514" y="851">Förderschnecke Schlammkuchen</text><text x="780" y="851">Rohrschnecke → Silo SI6.1</text>
+  <line x1="468" y1="855" x2="1026" y2="855" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="867">GS-1</text><text x="514" y="867">Gasspeicher Faulgas</text><text x="780" y="867">Doppelmembranspeicher</text>
+  <line x1="468" y1="871" x2="1026" y2="871" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="883">V6.1</text><text x="514" y="883">Gasverdichter BHKW-Zuleitung</text><text x="780" y="883">Seitenkanalverdichter</text>
+  <line x1="468" y1="887" x2="1026" y2="887" stroke="#dce4f0" stroke-width="0.7"/>
+  <text x="476" y="899">F6.1</text><text x="514" y="899">Gasfackel (Überschussgas)</text><text x="780" y="899">Hochtemperaturfackel</text>
+  <line x1="468" y1="903" x2="1026" y2="903" stroke="#dce4f0" stroke-width="0.7"/>
 </g>
-<text x="476" y="745" fill="#1a4080" font-size="8.5" font-weight="bold">MSR-Messgeräte:</text>
-<g fill="#334860" font-size="7.8">
-  <text x="476" y="760">FI 101</text><text x="528" y="760">Durchfluss Zulauf (MID / Ultraschall)</text>
-  <text x="476" y="774">QI 102</text><text x="528" y="774">Spektralsonde Zulauf (UV/VIS → CSB, AFS)</text>
-  <text x="476" y="788">LI 103</text><text x="528" y="788">Füllstand Pumpensumpf (Drucksensor)</text>
-  <text x="476" y="802">FIC 201</text><text x="528" y="802">Luftdurchfluss Gebläsestation (Regelung)</text>
-  <text x="476" y="816">QI 301</text><text x="528" y="816">O₂-Sonde Belebungsbecken Nitri-Zone</text>
-  <text x="476" y="830">LI 401</text><text x="528" y="830">Schlammspiegelmessung NK (Ultraschall)</text>
-  <text x="476" y="844">QI 501</text><text x="528" y="844">Ablaufanalyse CSB / NH₄-N / P-ges (online)</text>
-  <text x="476" y="858">FI 502</text><text x="528" y="858">Ablauf-Durchfluss Messschacht (MID)</text>
-  <text x="476" y="872">pH 504</text><text x="528" y="872">pH-Wert Ablauf (Glaselektrode)</text>
-  <text x="476" y="886">QI 503</text><text x="528" y="886">Abschlagqualität (Regenüberlauf-Monitor)</text>
+<text x="476" y="933" fill="#1a4080" font-size="8.5" font-weight="bold">MSR-Messgeräte:</text>
+<g fill="#334860" font-size="7.4">
+  <text x="476" y="948">FI 101</text><text x="520" y="948">Durchfluss Zulauf (MID / Ultraschall)</text>
+  <text x="476" y="962">QI 102</text><text x="520" y="962">Spektralsonde Zulauf (UV/VIS → CSB, AFS)</text>
+  <text x="476" y="976">LI 103</text><text x="520" y="976">Füllstand Pumpensumpf (Drucksensor)</text>
+  <text x="476" y="990">FIC 201</text><text x="520" y="990">Luftdurchfluss Gebläsestation (Regelung)</text>
+  <text x="476" y="1004">QI 301</text><text x="520" y="1004">O₂-Sonde Belebungsbecken Nitri-Zone</text>
+  <text x="476" y="1018">LI 401</text><text x="520" y="1018">Schlammspiegelmessung NK (Ultraschall)</text>
+  <text x="476" y="1032">QI 501</text><text x="520" y="1032">Ablaufanalyse CSB / NH₄-N / P-ges (online)</text>
+  <text x="476" y="1046">FI 502</text><text x="520" y="1046">Ablauf-Durchfluss Messschacht (MID)</text>
+  <text x="752" y="948">pH 504</text><text x="796" y="948">pH-Wert Ablauf (Glaselektrode)</text>
+  <text x="752" y="962">QI 503</text><text x="796" y="962">Abschlagqualität (Regenüberlauf-Monitor)</text>
+  <text x="752" y="976">FI 608</text><text x="796" y="976">Faulgasmenge zum Gasspeicher</text>
+  <text x="752" y="990">LI 609</text><text x="796" y="990">Füllstand Gasspeicher GS-1</text>
+  <text x="752" y="1004">PI 612</text><text x="796" y="1004">Saugdruck Dickschlammpumpe P6.2</text>
+  <text x="752" y="1018">FI 613</text><text x="796" y="1018">Durchfluss Dickschlamm zum FT-1 (MID)</text>
+  <text x="752" y="1032">PI 614</text><text x="796" y="1032">Enddruck Dickschlammpumpe P6.2</text>
+  <text x="752" y="1046">XA 615</text><text x="796" y="1046">Schwingungsüberwachung P6.2 (Körperschall)</text>
 </g>
 
 <!-- ─── ANMERKUNGEN ─── -->
-<rect x="1038" y="480" width="556" height="424" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
+<rect x="1038" y="480" width="556" height="579" rx="4" fill="#f8fafc" stroke="#1a3050" stroke-width="1.2"/>
 <text x="1316" y="496" text-anchor="middle" fill="#1a4080" font-size="10" font-weight="bold">ANMERKUNGEN / VERFAHRENSSCHEMA</text>
 <g font-size="8.5">
   <text x="1050" y="514" fill="#1a4080">Verfahren:</text>
@@ -3701,14 +4051,20 @@ def _(
   <text x="1050" y="810" fill="#334860">• Primärschlamm: ~0,5 % von Q_ZU, TS ~35 g/L</text>
   <text x="1050" y="822" fill="#334860">• Rücklaufschlamm: Verhältnis ~0,75, TS ~8–12 g/L</text>
   <text x="1050" y="834" fill="#334860">• Überschussschlamm: ~200 m³/d, Schlammalter ~12–15 d</text>
-  <text x="1050" y="846" fill="#334860">• PS + ÜS → Eindicker → Faulturm FT-1 (37 °C) → Entwässerung</text>
+  <text x="1050" y="846" fill="#334860">• PS + ÜS → Voreindicker VE-1 → P6.2 → Faulturm FT-1 (37 °C) → Z6.1 → SI6.1</text>
   <text x="1050" y="866" fill="#1a4080">Energetik:</text>
   <text x="1050" y="878" fill="#334860">• Gebläse ~50 %  |  Pumpen ~25–30 %  |  Schlamm, Gebäude ~20 %</text>
   <text x="1050" y="890" fill="#334860">• Eigenstrom BHKW (Faulgas) deckt ca. die Hälfte des Bedarfs</text>
+  <text x="1050" y="910" fill="#1a4080">Faulgas / Feststoffe:</text>
+  <text x="1050" y="922" fill="#334860">• FT-1 → GS-1 → Verdichter V6.1 → BHKW; Überschussgas → Fackel F6.1</text>
+  <text x="1050" y="934" fill="#334860">• Rechengut WP1.1 und Sand SK2.1 → Container; Zentrat Z6.1 → Hebewerk</text>
+  <text x="1050" y="954" fill="#1a4080">Höhen (m NN):</text>
+  <text x="1050" y="966" fill="#334860">• GOK Voreindicker VE-1 352,50  |  FFB Gerätehaus Schlammbehandlung 361,00</text>
+</g>
 </g>
 
 </svg>
-</div>''')
+</div>'''.replace("<!--P62_BLOCK-->", fs_p62))
 
         # ====== AUSSENANLAGEN TAB ======
         # Externe Pumpwerke im Einzugsgebiet – Fernwirktechnik / Außenstation PLS
