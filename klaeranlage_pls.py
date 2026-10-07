@@ -60,7 +60,7 @@ def _(mo):
 @app.cell
 def _(mo):
     # === STEUERUNGSPARAMETER ===
-    o2_soll = mo.ui.slider(start=0.5, stop=4.0, step=0.1, value=2.0, label="O₂-Sollwert Belebung [mg/L]")
+    o2_soll = mo.ui.slider(start=0.5, stop=4.0, step=0.1, value=2.0, label="O₂-Sollwert QIC 301 (Festwert) [mg/L]")
     rs_verhaeltnis = mo.ui.slider(start=0.3, stop=1.5, step=0.05, value=0.75, label="Rücklaufschlammverhältnis [-]")
     ues_menge = mo.ui.slider(start=100, stop=600, step=10, value=250, label="Überschussschlamm [m³/d]")
     faellmittel = mo.ui.slider(start=0, stop=80, step=1, value=40, label="Fällmitteldosierung FeCl₃ 40 % [L/h]")
@@ -69,6 +69,19 @@ def _(mo):
     temperatur = mo.ui.slider(start=6, stop=22, step=0.5, value=14.0, label="Abwassertemperatur [°C]")
     abschlag_schwelle = mo.ui.slider(start=10000, stop=40000, step=1000, value=20000, label="Abschlagschwelle [m³/d]")
     return abschlag_schwelle, faellmittel, o2_soll, regen_faktor, rs_verhaeltnis, temperatur, ues_menge, zulauf_q
+
+
+@app.cell
+def _(mo):
+    # === BELÜFTUNGSREGELUNG: NH₄-Kaskade (QIC 302 → QIC 301 → FIC 201) ===
+    kas_betrieb = mo.ui.radio(options=["O₂-Festwert", "NH₄-Kaskade"], value="O₂-Festwert",
+                              label="Betriebsart Belüftung", inline=True)
+    kas_nh4_sp = mo.ui.slider(start=0.5, stop=5.0, step=0.1, value=1.5, label="Sollwert NH₄-N QIC 302 [mg/L]", show_value=True)
+    kas_o2_min = mo.ui.slider(start=0.3, stop=2.0, step=0.1, value=0.8, label="O₂-Sollwert min [mg/L]", show_value=True)
+    kas_o2_max = mo.ui.slider(start=1.0, stop=4.0, step=0.1, value=2.5, label="O₂-Sollwert max [mg/L]", show_value=True)
+    kas_kp = mo.ui.slider(start=0.05, stop=2.0, step=0.05, value=0.4, label="Kp QIC 302 [(mg/L O₂)/(mg/L NH₄-N)]", show_value=True)
+    kas_tn = mo.ui.slider(start=0.25, stop=8.0, step=0.25, value=2.0, label="Tn QIC 302 [h]", show_value=True)
+    return kas_betrieb, kas_kp, kas_nh4_sp, kas_o2_max, kas_o2_min, kas_tn
 
 
 @app.cell
@@ -808,6 +821,7 @@ def _(
     mod_p_online, mod_pv, mod_spektral, mod_stufe4, mod_truebung, mod_turbo,
     np, o2_soll, pm, regen_faktor, rs_verhaeltnis, set_sim_state,
     temperatur, ues_menge, zulauf_q,
+    kas_betrieb, kas_kp, kas_nh4_sp, kas_o2_max, kas_o2_min, kas_tn,
 ):
     # === SIMULATIONSMODELL MIT ZEITDYNAMIK ===
     # Stationäre Bilanzen nach DWA-A 131 (Schlammalter aus Massenbilanz, Monod-Nitrifikation,
@@ -823,7 +837,11 @@ def _(
         T_E=2.0,           # h Eindickzeit Nachklärung
         RZ=2.0,            # interne Rezirkulation P4.1 [× Q_bio]
         Q_DIM=12000.0,     # m³/d Bemessungszufluss Trockenwetter
+        L_MAX=5200.0,      # Nm³/h Gebläse G1.1 bei 50 Hz
+        WH_NM3=25.2,       # Wh/Nm³ spezifischer Energiebedarf Drehkolbengebläse (Δp ≈ 0,5 bar)
     )
+    # Nitrifikanten: µmax(15 °C) 0,47 1/d, θ 1,103; Zerfall 0,05 1/d; K_NH4 1,0 mg/L; K_O2 0,5 mg/L; Ertrag 0,24
+    NIT = dict(MU=0.47, TH=1.103, B=0.05, KN=1.0, KO=0.5, Y=0.24)
     # Rohabwasserfrachten [kg/d] – bleiben bei Fremd-/Regenwasser gleich, nur die Konzentration sinkt
     FRACHT = dict(csb=7200.0, bsb=3600.0, tkn=564.0, p=96.0, afs=4200.0)
     FE_JE_L = 1.42 * 0.40 * 55.85 / 162.2   # kg Fe je Liter FeCl₃ 40 % (≈ 0,196)
@@ -831,16 +849,24 @@ def _(
 
     def _nh4_stat(o2, T, t_aer):
         """NH₄-N im Ablauf nach Monod (Nitrifikanten), None = Auswaschung."""
-        mu = 0.47 * 1.103 ** (T - 15) * o2 / (0.5 + o2)
-        b = 0.05 * 1.04 ** (T - 15)
+        mu = NIT["MU"] * NIT["TH"] ** (T - 15) * o2 / (NIT["KO"] + o2)
+        b = NIT["B"] * 1.04 ** (T - 15)
         g = t_aer * (mu - b)
         if g <= 1.0:
             return None
-        return 1.0 * (1 + b * t_aer) / (g - 1)
+        return NIT["KN"] * (1 + b * t_aer) / (g - 1)
 
-    def calc_targets(ctrl, zust=None):
+    def _tg_faktor(t_h):
+        """Tagesgang der Schmutzfracht (Mittel = 1), linear zwischen den Stundenwerten."""
+        tg = pm["tagesgang"]
+        x = t_h % 24.0
+        i = int(x)
+        return tg[i] + (tg[(i + 1) % 24] - tg[i]) * (x - i)
+
+    def calc_targets(ctrl, zust=None, o2_fix=None):
         """Zielwerte aus Steuerung + Modifikationen.
-        zust = None → stationärer Endzustand; sonst dict(ts, t_ts, isv) = aktueller Schlammzustand."""
+        zust = None → stationärer Endzustand; sonst dict(ts, t_ts, isv) = aktueller Schlammzustand.
+        o2_fix = tatsächlich erreichter O₂-Gehalt (Prozessdynamik), sonst Sollwert bzw. Kaskade."""
         rf_regen = ctrl["regen_faktor"]
         Q_roh = ctrl["zulauf_q"] * rf_regen
         T = ctrl["temperatur"]
@@ -887,10 +913,14 @@ def _(
         # Sauerstoff: NH₄-Kaskade sucht das kleinste O₂, das NH₄ ≤ 1 mg/L (Spitzenlast-Ansatz) hält
         t_aer = t_ts * (1 - ANL["VD_ANT"]) * (0.85 if mods.get("intermit") else 1.0)
         o2 = ctrl["o2_soll"]
-        if mods.get("nh4_sensor"):
-            for _o in np.arange(0.5, ctrl["o2_soll"] + 1e-9, 0.1):
+        if o2_fix is not None:
+            o2 = o2_fix
+        elif ctrl.get("kaskade"):
+            # stationär: kleinster O₂-Sollwert im Bereich min…max, der NH₄-N im Tagesmittel am Sollwert hält
+            o2 = ctrl["o2_max"]
+            for _o in np.arange(ctrl["o2_min"], ctrl["o2_max"] + 1e-9, 0.05):
                 _s = _nh4_stat(_o, T, t_aer)
-                if _s is not None and _s <= 1.0:
+                if _s is not None and _s * 1.15 <= ctrl["nh4_sp"]:
                     o2 = float(_o)
                     break
 
@@ -898,7 +928,7 @@ def _(
         n_us = 0.045 * (_us(t_ts) - 2.5 * fe_kgd) * 1000 / Q        # N-Einbau in Biomasse
         n_verf = max(0.0, cv["tkn"] - 2.0 - n_us)                    # nitrifizierbar (2 mg/L org. N bleiben)
         _s = _nh4_stat(o2, T, t_aer)
-        nh4 = n_verf if _s is None else min(n_verf, _s * 1.4)        # ×1,4: Tagesmittel bei Lastschwankung
+        nh4 = n_verf if _s is None else min(n_verf, _s * 1.15)       # ×1,15: Tagesmittel bei Tagesgang
         n_nit = n_verf - nh4
         nitri = n_nit / max(n_verf, 0.1)
 
@@ -960,6 +990,14 @@ def _(
         e_bel = _ebel(o2, mods.get("membran"), mods.get("turbo"), mods.get("intermit"))
         e_bel_ref = _ebel(ctrl["o2_soll"], False, False, False)
         luft = ov / 24 / (0.28 * 0.18 * (1.35 if mods.get("membran") else 1.0)) * (cs - 2.0) / max(0.5, cs - o2)
+        f_aer = (1 - ANL["VD_ANT"]) * (0.85 if mods.get("intermit") else 1.0)
+        mu_o = NIT["MU"] * NIT["TH"] ** (T - 15) * o2 / (NIT["KO"] + o2)
+        b_a = NIT["B"] * 1.04 ** (T - 15)
+        if _s is None:
+            x_a = 1.0
+        else:
+            _r = Q / V * (n_verf - _s)
+            x_a = NIT["Y"] * _r / max(1e-6, f_aer * (b_a + 1 / max(t_aer, 0.1)))
 
         n_ab = nh4 + no3 + 2.0
 
@@ -976,6 +1014,9 @@ def _(
             n_ab=n_ab, p_ab=p_ab, ph_ab=ph_ab,
             Q_rs=Q_rs, ts_rs=ts_rs, o2_ist=o2, beta=beta, fe_kgd=fe_kgd,
             ov=ov, luft=luft, e_bel=e_bel, e_bel_ref=e_bel_ref, us=us_s,
+            n_verf=n_verf, ov_c=ov_c, ov_d=2.86 * n_d * Q / 1000, cs=cs, x_a=x_a, f_aer=f_aer,
+            o2_sp=o2, nh4_dyn=nh4 if _s is None else min(n_verf, _s),
+            eta_dmax=min(eta_d, 0.95), o2_versch=o2_versch, d_cap=0.12 * cv["bsb"],
         )
 
     # Zeitkonstanten in Stunden. TS folgt mit dem Schlammalter (dynamisch gesetzt),
@@ -1000,21 +1041,81 @@ def _(
         Q_zu=0.06, T=0.01, Q_roh=0.06,
         csb_zu=0.10, bsb_zu=0.12, tkn_zu=0.08, nh4_zu=0.08, no3_zu=0.20, p_zu=0.10, afs_zu=0.15,
         csb_vk=0.06, bsb_vk=0.08, afs_vk=0.10, nh4_vk=0.06, p_vk=0.06,
-        csb_bio=0.05, bsb_bio=0.08, nh4_bio=0.12, no3_bio=0.06, p_bio=0.08,
+        csb_bio=0.05, bsb_bio=0.08, nh4_bio=0.05, no3_bio=0.05, p_bio=0.08,
         ts=0.015, t_ts=0.0, isv=0.03,
         ss_nk=0.05, afs_ab=0.10,
-        csb_ab=0.05, bsb_ab=0.08, nh4_ab=0.12, no3_ab=0.06, p_ab=0.08,
+        csb_ab=0.05, bsb_ab=0.08, nh4_ab=0.05, no3_ab=0.05, p_ab=0.08,
+        o2_ist=0.03, luft=0.015,
         ph_ab=0.004, Q_rs=0.01, ts_rs=0.03,
         csb_abschlag=0.10, afs_abschlag=0.12, nh4_abschlag=0.08, p_abschlag=0.08,
     )
     AR = 0.7
     SCHLAMM = ("ts", "t_ts", "isv")
 
-    def advance(proc, ctrl, dt_hours):
-        """Deterministischer Prozessschritt: Schlammzustand → schnelle Größen → Annäherung an Ziele."""
+    def _belueftung(ov, cs, o2_sp, mods):
+        """Luftbedarf für O₂-Sollwert, Begrenzung durch Gebläse G1.1 (FU 15…50 Hz bzw. Turbo 45–100 %)."""
+        mem = 1.35 if mods.get("membran") else 1.0
+        k = max(ov, 0.0) / 24 / (0.28 * 0.18 * mem) * (cs - 2.0)          # Luft = k / (cs − O₂)
+        l_max = ANL["L_MAX"]
+        l_min = (0.45 if mods.get("turbo") else 0.25) * l_max
+        luft_soll = k / max(0.3, cs - o2_sp)
+        if luft_soll > l_max:
+            luft, o2_ist, grenze = l_max, max(0.05, cs - k / l_max), "max"
+        elif luft_soll < l_min:
+            luft, o2_ist, grenze = l_min, min(cs - 0.3, cs - k / l_min), "min"
+        else:
+            luft, o2_ist, grenze = luft_soll, o2_sp, ""
+        p_kw = luft * ANL["WH_NM3"] / 1000 / (1.18 if mods.get("turbo") else 1.0) * (0.92 if mods.get("intermit") else 1.0)
+        return luft_soll, luft, o2_ist, grenze, p_kw
+
+    def advance(proc, ctrl, dt_hours, t0):
+        """Ein Stundenschritt: Schlammzustand (langsam), Nitrifikation mit Tagesgang und
+        Belüftungskaskade in 15-min-Schritten, übrige Größen nähern sich ihren Zielen."""
+        mods = ctrl.get("mods", {})
         stat = calc_targets(ctrl)
-        tg = calc_targets(ctrl, zust={k: proc[k] for k in SCHLAMM})
-        for k in SCHLAMM:
+        tg = calc_targets(ctrl, zust={k: proc[k] for k in SCHLAMM}, o2_fix=proc.get("o2_ist", stat["o2_sp"]))
+        T = ctrl["temperatur"]
+        V, Q = ANL["V_BB"], tg["Q_zu"]
+        mu_max = NIT["MU"] * NIT["TH"] ** (T - 15)
+        b_a = NIT["B"] * 1.04 ** (T - 15)
+        f_aer, t_ts = tg["f_aer"], max(0.5, proc["t_ts"])
+        s, x_a = proc.get("nh4_dyn", tg["nh4_dyn"]), proc.get("x_a", tg["x_a"])
+        o2_ist, integ = proc.get("o2_ist", tg["o2_sp"]), proc.get("kas_i", tg["o2_sp"])
+        n_sub = 4
+        h = dt_hours / n_sub
+        dd = h / 24.0
+        acc = dict(o2_sp=0.0, o2_ist=0.0, luft=0.0, luft_soll=0.0, p_kw=0.0, r=0.0)
+        grenze = ""
+        for j in range(n_sub):
+            f = _tg_faktor(t0 + (j + 0.5) * h)
+            a = Q / V                                      # 1/d
+            s_in = tg["n_verf"] * f                        # nitrifizierbares NH₄-N im Zulauf (Tagesgang)
+            rmax = mu_max * o2_ist / (NIT["KO"] + o2_ist) * x_a * f_aer / NIT["Y"]   # mg N/(L·d)
+            # implizites Euler-Verfahren für dS/dt = a(S_in − S) − rmax·S/(K+S)
+            A = 1 + a * dd
+            B = NIT["KN"] - s - dd * a * s_in + dd * a * NIT["KN"] + dd * rmax
+            C = -(s * NIT["KN"] + dd * a * s_in * NIT["KN"])
+            s = max(0.0, (-B + np.sqrt(B * B - 4 * A * C)) / (2 * A))
+            r = rmax * s / (NIT["KN"] + s)
+            mu = mu_max * o2_ist / (NIT["KO"] + o2_ist) * s / (NIT["KN"] + s)
+            x_a = max(0.5, x_a * (1 + dd * (f_aer * (mu - b_a) - 1 / t_ts)))
+            # Führungsregler QIC 302 (PI mit Begrenzung und Anti-Windup) → Sollwert QIC 301
+            if ctrl.get("kaskade"):
+                e = s - ctrl["nh4_sp"]
+                integ = float(np.clip(integ + ctrl["kp"] * h / max(ctrl["tn"], 0.05) * e, ctrl["o2_min"], ctrl["o2_max"]))
+                o2_sp = float(np.clip(integ + ctrl["kp"] * e, ctrl["o2_min"], ctrl["o2_max"]))
+            else:
+                o2_sp = ctrl["o2_soll"]
+                integ = o2_sp
+            # Sauerstoffbedarf mit Tagesgang → QIC 301 → FIC 201 → Gebläse G1.1
+            ov = tg["ov_c"] * (0.4 + 0.6 * f) + 4.3 * r * V / 1000 - tg["ov_d"]   # 40 % endogene Atmung
+            luft_soll, luft, o2_ist, grenze, p_kw = _belueftung(ov, tg["cs"], o2_sp, mods)
+            for k_, v_ in (("o2_sp", o2_sp), ("o2_ist", o2_ist), ("luft", luft), ("luft_soll", luft_soll),
+                           ("p_kw", p_kw), ("r", r)):
+                acc[k_] += v_ / n_sub
+        # übrige Größen: Ziele mit dem erreichten O₂ (Denitrifikation, ISV, Energie)
+        tg = calc_targets(ctrl, zust={k: proc[k] for k in SCHLAMM}, o2_fix=acc["o2_ist"])
+        for k in ("ts", "t_ts"):
             tg[k] = stat[k]
         tau_ts = float(np.clip(24 * stat["t_ts"], 48, 480))
         new = {}
@@ -1022,7 +1123,34 @@ def _(
             tau = tau_ts if k == "ts" else TAU.get(k, 6)
             old = proc.get(k, ziel)
             new[k] = old + (ziel - old) * (1 - np.exp(-dt_hours / tau))
+        # Stickstoff aus der Nitrifikationsdynamik
+        n_nit_dyn = max(0.0, tg["n_verf"] - s)
+        n_d_dyn = max(0.0, min(n_nit_dyn * tg["eta_dmax"] - tg["o2_versch"], tg["d_cap"]))
+        no3_ziel = n_nit_dyn - n_d_dyn + 0.5
+        new["deni"] = n_d_dyn / max(n_nit_dyn, 0.1)
+        new["no3_ab"] = proc.get("no3_ab", no3_ziel) + (no3_ziel - proc.get("no3_ab", no3_ziel)) * (1 - np.exp(-dt_hours / 4))
+        new["nh4_dyn"] = s
+        new["nh4_ab"] = s
+        new["nh4_bio"] = s
+        new["no3_bio"] = new["no3_ab"]
+        new["n_ab"] = new["nh4_ab"] + new["no3_ab"] + 2.0
+        new["n_bio"] = new["n_ab"]
+        new["nitri"] = (tg["n_verf"] - s) / max(tg["n_verf"], 0.1)
+        new["x_a"] = x_a
+        new["kas_i"] = integ
+        new["o2_sp"] = acc["o2_sp"]
+        new["o2_ist"] = o2_ist
+        new["luft"] = luft
+        new["luft_soll"] = luft_soll
+        new["luft_grenze"] = {"max": 1.0, "min": -1.0}.get(grenze, 0.0)
+        new["gebl_hz"] = 50.0 * luft / ANL["L_MAX"]
+        new["e_bel"] = acc["p_kw"] * 24
+        new["ov"] = tg["ov_c"] * (0.4 + 0.6 * _tg_faktor(t0 + dt_hours)) + 4.3 * r * V / 1000 - tg["ov_d"]
+        new["last_f"] = _tg_faktor(t0 + dt_hours)
+        new["kas_aktiv"] = 1.0 if ctrl.get("kaskade") else 0.0
+        new["nh4_sp"] = ctrl["nh4_sp"]
         return new
+
 
     def messen(proc, rausch):
         """Messwerte = Prozesszustand × (1 + korreliertes Rauschen); N-ges aus den Einzelwerten."""
@@ -1056,12 +1184,14 @@ def _(
         zulauf_q=zulauf_q.value, regen_faktor=regen_faktor.value,
         temperatur=temperatur.value, abschlag_schwelle=abschlag_schwelle.value,
         mods=mods, q_rs_pumpe=pm["rs_q_pumpe"], n_rs_max=pm["rs_n_max"], q_rs_p31=pm["rs_q_p31"],
+        kaskade=bool(mods["nh4_sensor"] and kas_betrieb.value == "NH₄-Kaskade"),
+        nh4_sp=kas_nh4_sp.value, o2_min=min(kas_o2_min.value, kas_o2_max.value),
+        o2_max=max(kas_o2_min.value, kas_o2_max.value), kp=kas_kp.value, tn=kas_tn.value,
     )
     targets = calc_targets(ctrl)   # stationärer Endzustand (Anzeige „Ziel“)
 
-    # Messtechnik-Modifikationen verkürzen die Regelstrecke
+    # Online-P-Messung verkürzt die Regelstrecke der Fällmitteldosierung
     TAU["p_ab"] = 2 if mods["p_online"] else 4
-    TAU["nh4_ab"] = 4 if mods["nh4_sensor"] else 6
 
     # Welcher Button wurde gedrückt?
     _b1 = btn_1h.value
@@ -1083,14 +1213,18 @@ def _(
         if _breset != prev.get("_breset", 0): do_reset = True
 
     if prev is None or do_reset or "proc" not in prev:
-        # Initialisierung: Start im stationären Zustand mit 48 h Vorgeschichte (Messrauschen)
+        # Initialisierung: 3 Tage Einschwingen mit Tagesgang, danach 48 h Vorgeschichte
         np.random.seed(2026)  # reproduzierbar: identischer Startzustand bei allen Nutzern
         proc = dict(targets)
+        for t_init in range(-72, 0):
+            proc = advance(proc, ctrl, 1.0, float(t_init))
         rausch = {}
         history = []
         for t_init in range(0, 49):
             current, rausch = messen(proc, rausch)
             history.append(dict(current, t=t_init))
+            if t_init < 48:
+                proc = advance(proc, ctrl, 1.0, float(t_init))
         total_hours = 48
     else:
         proc = prev["proc"]
@@ -1101,7 +1235,7 @@ def _(
 
         if dt > 0:
             for _ in range(int(dt)):
-                proc = advance(proc, ctrl, 1.0)
+                proc = advance(proc, ctrl, 1.0, total_hours)
                 current, rausch = messen(proc, rausch)
                 total_hours += 1.0
                 history.append(dict(current, t=total_hours))
@@ -1169,7 +1303,11 @@ def _(
                     e_netto=e_netto)
 
     _qroh_24 = float(np.mean([p.get("Q_roh", Q) for p in history[-24:]])) if history else Q
-    _ea = _energie(Q, current["csb_zu"], _qroh_24, current["e_bel"], current["e_bel_ref"])
+    # Energie als gleitendes 24-h-Mittel (Tagesgang der Belüftung, Messrauschen CSB)
+    _h24 = history[-24:] if history else [current]
+    _ea = _energie(float(np.mean([p_["Q_zu"] for p_ in _h24])), float(np.mean([p_["csb_zu"] for p_ in _h24])), _qroh_24,
+                   float(np.mean([p_.get("e_bel", current["e_bel"]) for p_ in _h24])),
+                   float(np.mean([p_.get("e_bel_ref", current["e_bel_ref"]) for p_ in _h24])))
     e_geblaese_ref, e_geblaese, p_hebewerk = _ea["e_geblaese_ref"], _ea["e_geblaese"], _ea["p_hebewerk"]
     p_rs, p_rez, p_ft, e_stufe4, e_pumpen = _ea["p_rs"], _ea["p_rez"], _ea["p_ft"], _ea["e_stufe4"], _ea["e_pumpen"]
     e_uv, e_gesamt, e_apw03, gas_nm3 = _ea["e_uv"], _ea["e_gesamt"], _ea["e_apw03"], _ea["gas_nm3"]
@@ -1202,6 +1340,10 @@ def _(
     if current["csb_ab"] > 75: alarme.append(("🔴", f"CSB Ablauf: {current['csb_ab']:.1f} > 75 mg/L"))
     if current["p_ab"] > 1.0: alarme.append(("⚠️", f"P-ges Ablauf: {current['p_ab']:.2f} > 1.0 mg/L"))
     if current["ss_nk"] > 150: alarme.append(("🔴", f"Schlammschicht NK: {current['ss_nk']:.0f} > 150 cm"))
+    if proc.get("luft_grenze", 0) > 0 and proc["o2_ist"] < proc["o2_sp"] - 0.2:
+        alarme.append(("⚠️", f"G1.1 an Maximaldrehzahl: O₂ {proc['o2_ist']:.1f} mg/L < Sollwert {proc['o2_sp']:.1f} mg/L"))
+    if proc.get("luft_grenze", 0) < 0 and proc["o2_ist"] > proc["o2_sp"] + 0.3:
+        alarme.append(("ℹ️", f"FIC 201 an Mindestluftmenge: O₂ {proc['o2_ist']:.1f} mg/L > Sollwert {proc['o2_sp']:.1f} mg/L"))
     if current["afs_ab"] > 20: alarme.append(("🔴", f"Schlammabtrieb NK: AFS Ablauf {current['afs_ab']:.0f} mg/L"))
     if current["q_sv"] > 500: alarme.append(("⚠️", f"Nachklärung überlastet: Schlammvolumenbeschickung {current['q_sv']:.0f} > 500 L/(m²·h)"))
     if current["ts"] > 5.0: alarme.append(("⚠️", f"TS Belebung: {current['ts']:.1f} > 5.0 g/L"))
@@ -1214,6 +1356,7 @@ def _(
     # State speichern
     set_sim_state({
         "current": current, "proc": proc, "rausch": rausch, "targets": targets, "history": history,
+        "kaskade": ctrl["kaskade"],
         "total_hours": total_hours,
         "_b1": _b1, "_b6": _b6, "_b24": _b24, "_b7d": _b7d, "_breset": _breset,
         "eta_csb": eta_csb, "eta_n": eta_n, "eta_p": eta_p,
@@ -1248,6 +1391,7 @@ def _(
     mod_ve,
     regen_faktor, rs_verhaeltnis, temperatur,
     ues_menge, zulauf_q,
+    kas_betrieb, kas_kp, kas_nh4_sp, kas_o2_max, kas_o2_min, kas_tn,
 ):
     import datetime as _dt
 
@@ -1623,9 +1767,10 @@ def _(
 
         # Gebläse-Berechnung aus O2-Sollwert
         o2_val = o2_soll.value
-        geblaese_luft = c.get("luft", 0.0)  # Nm³/h aus Sauerstoffbedarf und O₂-Ertrag
-        geblaese_p = st.get("e_geblaese", 0.0) / 24  # kW, Mittel aus Energiebilanz UV-2
-        geblaese_drehzahl = float(np.clip(600 + 1400 * geblaese_luft / 6000.0, 600, 2000))  # 1/min, FU-Kennlinie
+        _pr = st.get("proc", c)
+        geblaese_luft = c.get("luft", 0.0)  # Nm³/h, FIC 201
+        geblaese_p = _pr.get("e_bel", 0.0) / 24  # kW, aktuelle Leistungsaufnahme G1.1
+        geblaese_hz = _pr.get("gebl_hz", 0.0)
 
         # RS-Pumpwerk aus Verhältnis (Stufenschaltung P3.1–P3.6)
         rs_q_soll = tgt["Q_zu"] / 24 * rs_verhaeltnis.value
@@ -1671,15 +1816,18 @@ def _(
             mo.accordion({
                 "💡 O₂-Sollwert → Gebläse & Belüftung": mo.Html(f'''<div class="pls" style="font-size:0.85em">
                     <div class="pls-c">
-                        <p>Der O₂-Sollwert wird über einen <strong>PID-Regler</strong> gehalten.
-                        Stellglied ist das <strong>Drehkolbengebläse</strong> (FU-geregelt).</p>
+                        <p>Der O₂-Regler <strong>QIC 301</strong> gibt den Sollwert für den Luftmengenregler
+                        <strong>FIC 201</strong> vor, dieser stellt die Drehzahl des <strong>Drehkolbengebläses G1.1</strong>
+                        über den FU (Kaskadenregelung, Details im Tab Regelung).</p>
                         {vtbl(
-                            vr("Gebläse-Drehzahl", f"{geblaese_drehzahl:.0f}", "min⁻¹")
+                            vr("G1.1 Frequenz (FU)", f"{geblaese_hz:.1f}", "Hz")
                             + vr("Luftvolumenstrom", f"{geblaese_luft:.0f}", "Nm³/h")
                             + vr("elektr. Leistung", f"{geblaese_p:.1f}", "kW")
                         )}
-                        {vtbl(vr("O₂-Ist (Regelgröße QI 301)", f"{c.get('o2_ist', o2_val):.1f}", "mg/L")
-                              + vr("Sauerstoffbedarf OV", f"{c.get('ov', 0):.0f}", "kg O₂/d"))}
+                        {vtbl(vr("O₂-Sollwert QIC 301 (wirksam)", f"{_pr.get('o2_sp', o2_val):.1f}", "mg/L")
+                              + vr("O₂-Istwert QIC 301", f"{c.get('o2_ist', o2_val):.1f}", "mg/L")
+                              + vr("Sauerstoffbedarf OV", f"{_pr.get('ov', 0):.0f}", "kg O₂/d"))}
+                        <p>{"Betriebsart NH₄-Kaskade: der O₂-Sollwert kommt von QIC 302, der Regler oben ist ohne Wirkung." if st.get("kaskade") else "Betriebsart O₂-Festwert: QIC 301 regelt auf den eingestellten Sollwert."}</p>
                         <p>Über ca. 1,5–2 mg/L bringt mehr O₂ kaum noch Nitrifikationsleistung, kostet aber deutlich
                         mehr Energie (geringeres Sättigungsdefizit). Zu viel O₂ wird mit der internen Rezirkulation
                         in die Deni-Zone verschleppt und verschlechtert die Denitrifikation. Unter ca. 1 mg/L
@@ -1740,7 +1888,7 @@ def _(
                         )}
                         <p>Regelung: PI-Regler mit Totzeit (~30 min Fließstrecke). Messstelle P-ges
                         im Ablauf NK. Höhere Dosierung senkt P, aber auch den pH-Wert
-                        (pH aktuell: {c['ph_ab']:.2f}). Bei pH &lt; 6,8 springt die Kalkmilchpumpe P9.1 an.</p>
+                        (pH 504 im Ablauf: {c['ph_ab']:.2f}). Fällmittel und Nitrifikation verbrauchen Säurekapazität.</p>
                     </div>
                 </div>'''),
             }),
@@ -1907,14 +2055,6 @@ def _(
         poly_P = 0.25
         poly_bh = 5800 + th * 0.15
 
-        # Kalkmilchdosierung (pH-Korrektur, nur bei Bedarf)
-        kalk_aktiv = c["ph_ab"] < 6.8
-        kalk_Q = 8.0 if kalk_aktiv else 0
-        kalk_hub_pct = 50 if kalk_aktiv else 0
-        kalk_freq = 90
-        kalk_p = 4.0
-        kalk_P = 0.25 if kalk_aktiv else 0
-        kalk_bh = 2100 + (th * 0.1 if kalk_aktiv else 0)
 
         def pump_status(on=True):
             if on:
@@ -2273,7 +2413,7 @@ def _(
         <!-- KOLBENMEMBRANPUMPEN -->
         <div class="pls-c" style="margin-top:15px"><h3>🔴 Kolbenmembranpumpen</h3></div>
 
-        <div class="pls-g3">
+        <div class="pls-g2">
             <div class="pls-c">
                 <h3>Fällmittel P7.1 (Fe³⁺) {pump_status(fm_Q > 0)}</h3>
                 <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">ProMinent Sigma S2Cb – FeCl₃ 40%, ρ=1,42 kg/L</p>
@@ -2302,20 +2442,6 @@ def _(
                 )}
                 {kmp_svg("Polymerpumpe P8.1", poly_Q, poly_hub_pct, poly_freq, poly_p, poly_P, "Polyelektrolyt")}
             </div>
-            <div class="pls-c">
-                <h3>Kalkmilch P9.1 {pump_status(kalk_aktiv)}</h3>
-                <p style="font-size:0.8em;color:#b2bec3;margin:0 0 6px">ProMinent Sigma S1Cb – Ca(OH)₂ 5%, pH-geregelt</p>
-                {vtbl(
-                    vr("Dosierstrom Q", f"{kalk_Q:.1f}", "L/h")
-                    + vr("Hublänge", f"{kalk_hub_pct:.0f}", "%")
-                    + vr("Hubfrequenz", f"{kalk_freq}", "min⁻¹")
-                    + vr("Gegendruck", f"{kalk_p:.0f}", "bar")
-                    + vr("Leistung P₁", f"{kalk_P:.2f}", "kW")
-                    + vr("Betriebsstunden", f"{kalk_bh:.0f}", "h")
-                    + vr("pH Ablauf (Regelgröße)", f"{c['ph_ab']:.2f}", "", wl=6.8, dl=6.5)
-                )}
-                {kmp_svg("Kalkmilchpumpe P9.1", kalk_Q, kalk_hub_pct, kalk_freq, kalk_p, kalk_P, "Ca(OH)₂ 5%")}
-            </div>
         </div>
 
         <!-- Pumpen-Zusammenfassung -->
@@ -2339,9 +2465,8 @@ def _(
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P6.2 DS</td><td style="padding:5px 16px">Exz.schnecke</td><td style="text-align:right;padding:5px 16px">{ds_Q_h:.2f}&ensp;m³/h</td><td style="text-align:right;padding:5px 16px">{ds_P:.1f}</td><td style="text-align:center;padding:5px 16px">{pump_status(ds_Q_h > 0.1)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P7.1 Fe³⁺</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{fm_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{fm_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(fm_Q > 0)}</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P8.1 Poly</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{poly_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{poly_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(poly_Q > 0.5)}</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P9.1 Kalk</td><td style="padding:5px 16px">Kolbenmembran</td><td style="text-align:right;padding:5px 16px">{kalk_Q:.1f}&ensp;L/h</td><td style="text-align:right;padding:5px 16px">{kalk_P:.2f}</td><td style="text-align:center;padding:5px 16px">{pump_status(kalk_aktiv)}</td></tr>
                 <tr style="border-top:2px solid #74b9ff"><td colspan="3" style="padding:6px 16px;font-weight:bold;color:#74b9ff">Σ angezeigte Leistungen [kW]</td>
-                    <td style="text-align:right;padding:6px 16px;font-weight:bold;color:#74b9ff">{ps_P + ues_P + ds_P + fm_P + poly_P + kalk_P:.1f}</td>
+                    <td style="text-align:right;padding:6px 16px;font-weight:bold;color:#74b9ff">{ps_P + ues_P + ds_P + fm_P + poly_P:.1f}</td>
                     <td></td></tr>
             </table>
         </div>
@@ -2545,7 +2670,7 @@ def _(
         ])
 
         # ====== REGELUNG ======
-        regelung = mo.Html('''<div class="pls">
+        regelung_sims = mo.Html('''<div class="pls">
         <div class="pls-c"><h3>📐 Regelungstechnik – Simulationen</h3>
             <p style="font-size:0.9em;margin:8px 0">
                 Die folgenden interaktiven Marimo-Simulationen vertiefen zentrale Regelungskonzepte,
@@ -2619,14 +2744,159 @@ def _(
             <table style="width:100%;border-collapse:collapse;font-size:0.88em;color:#ffffff;background:#16213e">
                 <tr style="border-bottom:2px solid #0f3460;background:#0f1a30"><th style="padding:8px 16px;color:#74b9ff;text-align:left">Regelkreis</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Regelgröße</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Stellglied</th><th style="padding:8px 16px;color:#74b9ff;text-align:left">Reglertyp</th></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Zulauf-Füllstand</td><td style="padding:5px 16px">Wasserstand Pumpensumpf</td><td style="padding:5px 16px">P1.1 Zulaufpumpe (FU)</td><td style="padding:5px 16px">PI</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">O₂-Regelung BB</td><td style="padding:5px 16px">O₂-Gehalt [mg/L]</td><td style="padding:5px 16px">Gebläse / Belüfter</td><td style="padding:5px 16px">PID</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">RS-Regelung</td><td style="padding:5px 16px">Schlammschicht NK [cm]</td><td style="padding:5px 16px">P3.1–P3.6 RS-Pumpen (Stufenschaltung)</td><td style="padding:5px 16px">Mehrpunkt</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Füllstand PW Talstraße</td><td style="padding:5px 16px">Wasserstand Pumpensumpf</td><td style="padding:5px 16px">P-001 / P-002 (Grund-/Spitzenlast)</td><td style="padding:5px 16px">Zweipunkt mit Schaltdifferenz, 2 Stufen</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">NH₄-Regelung BB (Mod.)</td><td style="padding:5px 16px">NH₄-N Nitrifikation QIC 302</td><td style="padding:5px 16px">Sollwert QIC 301</td><td style="padding:5px 16px">PI mit Begrenzung (Führungsregler)</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">O₂-Regelung BB</td><td style="padding:5px 16px">O₂-Gehalt QIC 301</td><td style="padding:5px 16px">Sollwert FIC 201</td><td style="padding:5px 16px">PI (Folgeregler bzw. Festwert)</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Luftmenge Belüftung</td><td style="padding:5px 16px">Luftvolumenstrom FIC 201</td><td style="padding:5px 16px">FU Drehkolbengebläse G1.1</td><td style="padding:5px 16px">PI (innerster Folgeregler)</td></tr>
+                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">RS-Verhältnissteuerung</td><td style="padding:5px 16px">Q_RS / Q_zu (FI 402)</td><td style="padding:5px 16px">P3.1–P3.6 RS-Pumpen (Stufenschaltung)</td><td style="padding:5px 16px">Verhältnis, Mehrpunkt</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">P-Elimination</td><td style="padding:5px 16px">P-ges Ablauf [mg/L]</td><td style="padding:5px 16px">P7.1 Fällmittel-KMP</td><td style="padding:5px 16px">PI + Totzeit</td></tr>
-                <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">pH-Korrektur</td><td style="padding:5px 16px">pH Ablauf [-]</td><td style="padding:5px 16px">P9.1 Kalkmilch-KMP</td><td style="padding:5px 16px">Zweipunkt</td></tr>
                 <tr style="border-bottom:1px solid #0f3460"><td style="padding:5px 16px">Polymer-Dosierung</td><td style="padding:5px 16px">TS Filtrat [mg/L]</td><td style="padding:5px 16px">P8.1 Polymer-KMP</td><td style="padding:5px 16px">Festwert</td></tr>
             </table>
         </div>
         </div>''')
+
+        # ====== REGELUNG: BELÜFTUNGSKASKADE QIC 302 → QIC 301 → FIC 201 → G1.1 ======
+        _kp = st.get("proc", c)
+        _k_mods = st.get("mods", dict())
+        _k_sensor = bool(_k_mods.get("nh4_sensor"))
+        _k_aktiv = bool(st.get("kaskade"))
+        _k_lmax = 5200.0
+        _k_lmin = (0.45 if _k_mods.get("turbo") else 0.25) * _k_lmax
+        _k_fic_sp = min(max(_kp.get("luft_soll", 0.0), _k_lmin), _k_lmax)
+        _k_grenze = _kp.get("luft_grenze", 0.0)
+        _k_hz = _kp.get("gebl_hz", 0.0)
+
+        def _k_block(x, tag, titel, modus, mcol, rows, aktiv=True, warn=""):
+            _op = "1" if aktiv else "0.45"
+            _r = ""
+            for _i, (_lab, _val, _col) in enumerate(rows):
+                _y = 62 + _i * 18
+                _r += (f'<text x="{x + 10}" y="{_y}" fill="#b2bec3" font-size="11" font-family="monospace">{_lab}</text>'
+                       f'<text x="{x + 160}" y="{_y}" fill="{_col}" font-size="12" font-weight="bold" text-anchor="end" font-family="monospace">{_val}</text>')
+            _w = (f'<rect x="{x + 8}" y="{116}" width="154" height="16" rx="2" fill="#e17055"/>'
+                  f'<text x="{x + 85}" y="{128}" fill="#1a1a2e" font-size="10" font-weight="bold" text-anchor="middle" font-family="monospace">{warn}</text>') if warn else ""
+            return (f'<g opacity="{_op}"><rect x="{x}" y="20" width="170" height="118" rx="5" fill="#16213e" stroke="#0f3460" stroke-width="1.5"/>'
+                    f'<rect x="{x}" y="20" width="170" height="22" rx="5" fill="#0f3460"/>'
+                    f'<text x="{x + 10}" y="36" fill="#74b9ff" font-size="12" font-weight="bold" font-family="monospace">{tag}</text>'
+                    f'<text x="{x + 66}" y="36" fill="#dfe6e9" font-size="10" font-family="monospace">{titel}</text>'
+                    f'<rect x="{x + 124}" y="25" width="40" height="13" rx="2" fill="{mcol}"/>'
+                    f'<text x="{x + 144}" y="35" fill="#1a1a2e" font-size="9" font-weight="bold" text-anchor="middle" font-family="monospace">{modus}</text>'
+                    f'{_r}{_w}</g>')
+
+        _v, _ok, _w = "#74b9ff", "#00b894", "#fdcb6e"
+        _b302 = _k_block(20, "QIC 302", "NH₄-N", "AUTO" if _k_aktiv else ("AUS" if _k_sensor else "n.v."),
+                         "#00b894" if _k_aktiv else "#636e72",
+                         [("SP mg/L", f"{kas_nh4_sp.value:.1f}" if _k_aktiv else "–", _v),
+                          ("PV mg/L", f"{c['nh4_ab']:.2f}" if _k_sensor else "–", _v),
+                          ("OP O₂ mg/L", f"{_kp.get('o2_sp', 0):.2f}" if _k_aktiv else "–", _ok)],
+                         aktiv=_k_aktiv,
+                         warn=("OP an Grenze" if _k_aktiv and (_kp.get("o2_sp", 0) >= kas_o2_max.value - 0.01 or _kp.get("o2_sp", 0) <= kas_o2_min.value + 0.01) else ""))
+        _b301 = _k_block(240, "QIC 301", "O₂", "KASK" if _k_aktiv else "AUTO", "#74b9ff" if _k_aktiv else "#00b894",
+                         [("SP mg/L", f"{_kp.get('o2_sp', 0):.2f}", _v),
+                          ("PV mg/L", f"{c.get('o2_ist', 0):.2f}", _w if abs(c.get('o2_ist', 0) - _kp.get('o2_sp', 0)) > 0.3 else _v),
+                          ("OP Nm³/h", f"{_k_fic_sp:,.0f}".replace(",", "."), _ok)])
+        _b201 = _k_block(460, "FIC 201", "Luft", "KASK", "#74b9ff",
+                         [("SP Nm³/h", f"{_k_fic_sp:,.0f}".replace(",", "."), _v),
+                          ("PV Nm³/h", f"{c.get('luft', 0):,.0f}".replace(",", "."), _v),
+                          ("OP %", f"{_k_hz / 50 * 100:.0f}", _ok)],
+                         warn={1.0: "OP MAX", -1.0: "OP MIN"}.get(_k_grenze, ""))
+        _b_g = (f'<g><rect x="680" y="20" width="130" height="118" rx="5" fill="#16213e" stroke="#0f3460" stroke-width="1.5"/>'
+                f'<rect x="680" y="20" width="130" height="22" rx="5" fill="#0f3460"/>'
+                f'<text x="690" y="36" fill="#74b9ff" font-size="12" font-weight="bold" font-family="monospace">G1.1</text>'
+                f'<text x="730" y="36" fill="#dfe6e9" font-size="10" font-family="monospace">{"Turbo" if _k_mods.get("turbo") else "Drehkolben"}</text>'
+                f'<text x="690" y="62" fill="#b2bec3" font-size="11" font-family="monospace">f FU</text>'
+                f'<text x="800" y="62" fill="#74b9ff" font-size="12" font-weight="bold" text-anchor="end" font-family="monospace">{_k_hz:.1f} Hz</text>'
+                f'<text x="690" y="80" fill="#b2bec3" font-size="11" font-family="monospace">P el</text>'
+                f'<text x="800" y="80" fill="#74b9ff" font-size="12" font-weight="bold" text-anchor="end" font-family="monospace">{_kp.get("e_bel", 0) / 24:.0f} kW</text>'
+                f'<text x="690" y="98" fill="#b2bec3" font-size="10" font-family="monospace">f min</text>'
+                f'<text x="800" y="98" fill="#b2bec3" font-size="10" text-anchor="end" font-family="monospace">{_k_lmin / _k_lmax * 50:.1f} Hz</text></g>')
+        _b_bb = (f'<g><rect x="850" y="20" width="130" height="118" rx="5" fill="#2d3436" stroke="#00b894" stroke-width="1.5"/>'
+                 f'<text x="915" y="40" fill="#55efc4" font-size="11" font-weight="bold" text-anchor="middle" font-family="monospace">BB Nitri</text>'
+                 f'<text x="860" y="62" fill="#b2bec3" font-size="11" font-family="monospace">OV</text>'
+                 f'<text x="970" y="62" fill="#dfe6e9" font-size="11" text-anchor="end" font-family="monospace">{_kp.get("ov", 0) / 24:.0f} kg/h</text>'
+                 f'<text x="860" y="80" fill="#b2bec3" font-size="11" font-family="monospace">T</text>'
+                 f'<text x="970" y="80" fill="#dfe6e9" font-size="11" text-anchor="end" font-family="monospace">{c["T"]:.1f} °C</text>'
+                 f'<text x="860" y="98" fill="#b2bec3" font-size="11" font-family="monospace">Last</text>'
+                 f'<text x="970" y="98" fill="#dfe6e9" font-size="11" text-anchor="end" font-family="monospace">{_kp.get("last_f", 1) * 100:.0f} %</text></g>')
+
+        def _k_pfeil(x1, x2, y=79):
+            return (f'<line x1="{x1}" y1="{y}" x2="{x2 - 7}" y2="{y}" stroke="#74b9ff" stroke-width="2"/>'
+                    f'<polygon points="{x2 - 8},{y - 5} {x2},{y} {x2 - 8},{y + 5}" fill="#74b9ff"/>')
+
+        def _k_rueck(x_von, x_nach, y, tag):
+            return (f'<path d="M {x_von} 138 L {x_von} {y} L {x_nach} {y} L {x_nach} 146" fill="none" stroke="#b2bec3" stroke-width="1.2" stroke-dasharray="5,3"/>'
+                    f'<polygon points="{x_nach - 5},{148} {x_nach},{140} {x_nach + 5},{148}" fill="#b2bec3"/>'
+                    f'<text x="{x_nach + 8}" y="{y - 4}" fill="#b2bec3" font-size="10" font-family="monospace">{tag}</text>')
+
+        _k_svg = (f'<svg viewBox="0 0 1000 232" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;background:#1a1a2e;border-radius:6px">'
+                  f'{_b302}{_b301}{_b201}{_b_g}{_b_bb}'
+                  f'{_k_pfeil(190, 240) if _k_aktiv else ""}{_k_pfeil(410, 460)}{_k_pfeil(630, 680)}'
+                  f'<line x1="810" y1="79" x2="843" y2="79" stroke="#c8a020" stroke-width="2.5" stroke-dasharray="8,3"/>'
+                  f'<polygon points="842,74 850,79 842,84" fill="#c8a020"/>'
+                  f'{_k_rueck(940, 545, 214, "FI 201") if True else ""}'
+                  f'{_k_rueck(915, 325, 196, "QI 301")}'
+                  f'{_k_rueck(890, 105, 178, "QI 302") if _k_sensor else ""}'
+                  f'</svg>')
+
+        _k_td = 'style="padding:5px 12px;white-space:nowrap;border-bottom:1px solid #0f3460"'
+        _k_th = 'style="padding:6px 12px;color:#74b9ff;text-align:left;white-space:nowrap;background:#0f1a30"'
+        _k_param = (f'<table style="border-collapse:collapse;font-size:0.85em;color:#ffffff;background:#16213e">'
+                    f'<tr><th {_k_th}>Regler</th><th {_k_th}>Regelgröße</th><th {_k_th}>Sollwert von</th><th {_k_th}>Typ / Parameter</th><th {_k_th}>Stellbereich</th></tr>'
+                    f'<tr><td {_k_td}>QIC 302</td><td {_k_td}>NH₄-N Nitrifikation</td><td {_k_td}>Bediener</td>'
+                    f'<td {_k_td}>PI, Kp {kas_kp.value:.2f}, Tn {kas_tn.value:.2f} h, Abtastung 15 min</td>'
+                    f'<td {_k_td}>O₂-SP {min(kas_o2_min.value, kas_o2_max.value):.1f}–{max(kas_o2_min.value, kas_o2_max.value):.1f} mg/L</td></tr>'
+                    f'<tr><td {_k_td}>QIC 301</td><td {_k_td}>O₂ Nitrifikation</td><td {_k_td}>{"QIC 302 (Kaskade)" if _k_aktiv else "Bediener (Festwert)"}</td>'
+                    f'<td {_k_td}>PI, Kp 900 (Nm³/h)/(mg/L), Tn 8 min</td><td {_k_td}>{f"{_k_lmin:,.0f}".replace(",", ".")}–{f"{_k_lmax:,.0f}".replace(",", ".")} Nm³/h</td></tr>'
+                    + f'<tr><td {_k_td}>FIC 201</td><td {_k_td}>Luftvolumenstrom</td><td {_k_td}>QIC 301</td>'
+                    f'<td {_k_td}>PI, Kp 0.6 %/%, Tn 15 s</td><td {_k_td}>FU G1.1 {_k_lmin / _k_lmax * 50:.1f}–50 Hz</td></tr></table>')
+
+        if len(hist) >= 2:
+            _kt = [h["t"] for h in hist]
+            _kf = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                                subplot_titles=("NH₄-N Nitrifikation [mg/L]", "O₂ Nitrifikation [mg/L]", "Luftvolumenstrom FIC 201 [Nm³/h]"))
+            _kf.add_trace(go.Scatter(x=_kt, y=[h.get("nh4_ab", 0) for h in hist], mode="lines", name="NH₄-N PV",
+                                     line=dict(color="#fdcb6e", width=2)), row=1, col=1)
+            _kf.add_trace(go.Scatter(x=_kt, y=[h.get("nh4_sp") if h.get("kas_aktiv") else None for h in hist], mode="lines",
+                                     name="NH₄-N SP", line=dict(color="#dfe6e9", width=1.5, dash="dash", shape="hv")), row=1, col=1)
+            _kf.add_trace(go.Scatter(x=_kt, y=[h.get("o2_sp", 0) for h in hist], mode="lines", name="O₂ SP",
+                                     line=dict(color="#dfe6e9", width=1.5, dash="dash", shape="hv")), row=2, col=1)
+            _kf.add_trace(go.Scatter(x=_kt, y=[h.get("o2_ist", 0) for h in hist], mode="lines", name="O₂ PV",
+                                     line=dict(color="#74b9ff", width=2)), row=2, col=1)
+            _kf.add_trace(go.Scatter(x=_kt, y=[h.get("luft", 0) for h in hist], mode="lines", name="Luft PV",
+                                     line=dict(color="#55efc4", width=2)), row=3, col=1)
+            _kf.add_hline(y=_k_lmax, line_dash="dot", line_color="#e17055", row=3, col=1)
+            _kf.add_hline(y=_k_lmin, line_dash="dot", line_color="#e17055", row=3, col=1)
+            _kf.update_layout(height=620, template="plotly_dark", paper_bgcolor="#1a1a2e", plot_bgcolor="#16213e",
+                              font=dict(family="Consolas,monospace", size=10, color="#dfe6e9"),
+                              legend=dict(orientation="h", y=-0.1, x=0), margin=dict(t=40, b=70, l=60, r=20))
+            _kf.update_xaxes(gridcolor="#0f3460")
+            _kf.update_xaxes(title_text="Simulationszeit [h]", row=3, col=1)
+            _kf.update_yaxes(gridcolor="#0f3460")
+            _k_trend = _kf
+        else:
+            _k_trend = mo.md("")
+
+        if _k_sensor:
+            _k_bedien = mo.vstack([
+                kas_betrieb,
+                mo.hstack([kas_nh4_sp, kas_o2_min, kas_o2_max], justify="start", gap=1.5),
+                mo.hstack([kas_kp, kas_tn], justify="start", gap=1.5),
+                o2_soll,
+            ])
+        else:
+            _k_bedien = mo.vstack([
+                mo.Html('<div class="pls"><div class="pls-alarm">ℹ️ QIC 302: NH₄-Messung QI 302 nicht vorhanden – Belüftung im Betrieb O₂-Festwert</div></div>'),
+                o2_soll,
+            ])
+
+        regelung = mo.vstack([
+            mo.Html('<div class="pls"><div class="pls-c"><h3>🌀 Belüftungsregelung Belebungsbecken – Kaskade QIC 302 → QIC 301 → FIC 201 → G1.1</h3></div></div>'),
+            _k_bedien,
+            mo.Html(f'<div class="pls"><div class="pls-c" style="overflow-x:auto">{_k_svg}</div></div>'),
+            mo.Html(f'<div class="pls"><div class="pls-c">{_k_param}</div></div>'),
+            _k_trend,
+            regelung_sims,
+        ])
 
         # ====== MODIFIKATIONEN TAB ======
         m = st.get("mods", {})
@@ -2640,7 +2910,7 @@ def _(
                 "wirkung": "Reduziert die effektive Totzeit von ~30 min auf ~5 min. Fällmittel wird frachtproportional dosiert → bessere Fällwirkung je mol Fe; derselbe P-Ablauf lässt sich mit ca. 15–20 % weniger FeCl₃ erreichen (Dosierung entsprechend absenken)."},
             "nh4_sensor": {"name": "NH₄-Sensor im Belebungsbecken", "kat": "Messtechnik", "inv": 18000, "betr": 3000,
                 "icon": "🟢", "color": "#00b894",
-                "tech": "Ionenselektive NH₄-Sonde (z.B. WTW VARiON) im BB-Auslauf. Kaskaden-Regelung: NH₄-Regler (Führungsregler) gibt O₂-Sollwert vor → O₂-Regler (Folgeregler) steuert Gebläse.",
+                "tech": "Ionenselektive NH₄-Sonde QIC 302 (z. B. WTW VARiON) am Ende der Nitrifikation. Erweitert die Belüftungsregelung zur dreistufigen Kaskade: NH₄-Regler QIC 302 (Führungsregler) → O₂-Regler QIC 301 → Luftmengenregler FIC 201 → Gebläse G1.1. Betriebsart, Sollwert und Reglerparameter im Tab Regelung.",
                 "wirkung": "Der NH₄-Regler senkt den O₂-Sollwert so weit, dass NH₄-N im Ablauf um 1 mg/L bleibt → je nach Temperatur und Schlammalter 5–20 % weniger Belüftungsenergie, weniger O₂-Verschleppung in die Deni-Zone."},
             "spektral": {"name": "Spektralsonde am Zulauf (UV/VIS)", "kat": "Messtechnik", "inv": 35000, "betr": 4000,
                 "icon": "🟢", "color": "#00b894",
@@ -2657,7 +2927,7 @@ def _(
             "turbo": {"name": "Turboverdichter statt Drehkolbengebläse", "kat": "Verfahren", "inv": 120000, "betr": 5000,
                 "icon": "🔵", "color": "#0984e3",
                 "tech": "Hocheffiziente Turboverdichter (z.B. HST Turbogebläse) mit Magnetlagerung, ölfreier Betrieb, stufenlose FU-Regelung. Wirkungsgrad ~80% vs. ~65% bei Drehkolben.",
-                "wirkung": "Ca. 18% Energieeinsparung bei der Belüftung. Zusätzlich: wartungsarm (keine Ölwechsel, keine Riemen), leiser. Amortisation 4-6 Jahre."},
+                "wirkung": "Ca. 15 % Energieeinsparung bei der Belüftung, wartungsarm (keine Ölwechsel, keine Riemen), leiser. Regelbereich nur ca. 45–100 %: nachts kann die Mindestluftmenge den O₂-Sollwert überfahren. Amortisation 4–6 Jahre."},
             "intermit": {"name": "Intermittierende Belüftung", "kat": "Verfahren", "inv": 30000, "betr": 2000,
                 "icon": "🔵", "color": "#0984e3",
                 "tech": "Taktbetrieb der Belüftung: Wechsel zwischen belüfteten (Nitrifikation) und unbelüfteten Phasen (Denitrifikation) im selben Becken. Steuerung über NH₄/NO₃-Sensoren oder Zeitprogramm.",
@@ -3273,7 +3543,18 @@ def _(
         ])
 
         # === FLIESSSCHEMA TAB ===
-        fliessschema = mo.Html('''<div style="background:#f0f4f8; border-radius:8px; padding:10px; overflow:auto;">
+        _qic302 = ""
+        _qic302_l = ""
+        if mod_nh4_sensor.value:
+            _qic302 = ('<path class="p-sig" d="M 722,254 L 722,268"/>'
+                       '<path class="p-sig" d="M 732,244 L 744,244"/>'
+                       '<circle cx="722" cy="244" r="10" fill="#ffffff" stroke="#3a6090" stroke-width="1.2"/>'
+                       '<text x="722" y="242.5" text-anchor="middle" fill="#1a3a70" font-size="6.2">QIC</text>'
+                       '<text x="722" y="250.5" text-anchor="middle" fill="#1a3050" font-size="6">302</text>'
+                       '<text x="716" y="268" text-anchor="end" fill="#0a4818" font-size="6.5">NH₄</text>')
+            _qic302_l = ('<text x="476" y="1096.5">QIC 302</text>'
+                         '<text x="526" y="1096.5">NH₄-Regelung Nitrifikation → QIC 301</text>')
+        fliessschema = mo.Html(('''<div style="background:#f0f4f8; border-radius:8px; padding:10px; overflow:auto;">
 <style>
   .p-aw   { stroke:#1e90e8; stroke-width:3;   fill:none; }
   .p-rs   { stroke:#c07828; stroke-width:2.2; fill:none; stroke-dasharray:9,4; }
@@ -3488,9 +3769,11 @@ def _(
 <circle cx="756" cy="312" r="2.6" fill="none" stroke="#1e5080" stroke-width="0.8" opacity="0.7"/>
 <text x="705" y="296" text-anchor="middle" fill="#0e2e58" font-size="6.5">Membranbelüfter</text>
 <path class="p-sig" d="M 754,254 L 754,268"/>
+<path class="p-sig" d="M 754,234 L 754,120"/>
 <circle cx="754" cy="244" r="10" fill="#ffffff" stroke="#3a6090" stroke-width="1.2"/>
-<text x="754" y="242.5" text-anchor="middle" fill="#1a3a70" font-size="6.8">QI</text>
+<text x="754" y="242.5" text-anchor="middle" fill="#1a3a70" font-size="6.2">QIC</text>
 <text x="754" y="250.5" text-anchor="middle" fill="#1a3050" font-size="6">301</text>
+<!--QIC302-->
 <text x="766" y="268" text-anchor="start" fill="#0a4818" font-size="6.5">O₂</text>
 <path class="p-ir" d="M 740,170 L 740,156 L 504,156 L 504,170" marker-end="url(#air)"/>
 <circle cx="580" cy="156" r="9" fill="#ffffff" stroke="#8040c0" stroke-width="1.6"/>
@@ -3583,11 +3866,6 @@ def _(
 <circle cx="1108" cy="304" r="10" fill="#ffffff" stroke="#286848" stroke-width="1.2"/>
 <text x="1108" y="302.5" text-anchor="middle" fill="#1a3a70" font-size="6.8">pH</text>
 <text x="1108" y="310.5" text-anchor="middle" fill="#1a3050" font-size="6">504</text>
-<rect x="1131" y="310" width="22" height="16" rx="2" fill="#ffffff" stroke="#5030a0" stroke-width="1.4"/>
-<path d="M 1135,320 Q 1142,311 1149,320" fill="none" stroke="#5030a0" stroke-width="1.4"/>
-<path class="p-fm" d="M 1142,310 L 1142,284" marker-end="url(#afm)"/>
-<text x="1156" y="322" text-anchor="start" fill="#2a10a0" font-size="7">P9.1</text>
-<text x="1156" y="331" text-anchor="start" fill="#2a10a0" font-size="6.5">Kalkmilch</text>
 <path class="p-ab" d="M 1160,240 L 1234,240" marker-end="url(#aab)"/>
 <circle cx="1190" cy="240" r="2.8" fill="#e03848"/>
 <path class="p-sig" d="M 1204,150 L 1190,150"/>
@@ -3922,69 +4200,68 @@ def _(
   <line x1="468" y1="631" x2="1026" y2="631" stroke="#dce4f0" stroke-width="0.7"/>
   <text x="476" y="643">P7.1</text><text x="514" y="643">Fällmitteldosierpumpe FeCl₃ 40 %</text><text x="780" y="643">ProMinent Sigma S2Cb, KMP</text>
   <line x1="468" y1="647" x2="1026" y2="647" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="659">P9.1</text><text x="514" y="659">Kalkmilchpumpe (bei pH &lt; 6,8)</text><text x="780" y="659">Kolbenmembranpumpe KMP</text>
+  <text x="476" y="659">G1.1/2</text><text x="514" y="659">Drehkolbengebläse Belüftung BB, FU</text><text x="780" y="659">Aerzen/Roto, 1 Betr. + 1 Reserve</text>
   <line x1="468" y1="663" x2="1026" y2="663" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="675">G1.1/2</text><text x="514" y="675">Drehkolbengebläse Belüftung BB, FU</text><text x="780" y="675">Aerzen/Roto, 1 Betr. + 1 Reserve</text>
+  <text x="476" y="675">G2.1</text><text x="514" y="675">Sandfanggebläse (Luftheber)</text><text x="780" y="675">Drehkolbengebläse</text>
   <line x1="468" y1="679" x2="1026" y2="679" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="691">G2.1</text><text x="514" y="691">Sandfanggebläse (Luftheber)</text><text x="780" y="691">Drehkolbengebläse</text>
+  <text x="476" y="691">Rw1.1</text><text x="514" y="691">Tauchmotorrührwerk Denizone</text><text x="780" y="691">ABS/Flygt, ~4 kW</text>
   <line x1="468" y1="695" x2="1026" y2="695" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="707">Rw1.1</text><text x="514" y="707">Tauchmotorrührwerk Denizone</text><text x="780" y="707">ABS/Flygt, ~4 kW</text>
+  <text x="476" y="707">R1.1</text><text x="514" y="707">Siebrechenanlage (mech. Reinigung)</text><text x="780" y="707">Treppenrechen / Bürstenrechen</text>
   <line x1="468" y1="711" x2="1026" y2="711" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="723">R1.1</text><text x="514" y="723">Siebrechenanlage (mech. Reinigung)</text><text x="780" y="723">Treppenrechen / Bürstenrechen</text>
+  <text x="476" y="723">P6.2</text><text x="514" y="723">Dickschlammpumpe VE-1 → FT-1, FU</text><text x="780" y="723">Sulzer PC, ESP</text>
   <line x1="468" y1="727" x2="1026" y2="727" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="739">P6.2</text><text x="514" y="739">Dickschlammpumpe VE-1 → FT-1, FU</text><text x="780" y="739">Sulzer PC, ESP</text>
+  <text x="476" y="739">P6.3</text><text x="514" y="739">Beschickungspumpe Zentrifuge, FU</text><text x="780" y="739">Exzenterschneckenpumpe ESP</text>
   <line x1="468" y1="743" x2="1026" y2="743" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="755">P6.3</text><text x="514" y="755">Beschickungspumpe Zentrifuge, FU</text><text x="780" y="755">Exzenterschneckenpumpe ESP</text>
+  <text x="476" y="755">P8.1</text><text x="514" y="755">Polymerdosierung Entwässerung (FHM)</text><text x="780" y="755">ProMinent Sigma S1Cb, KMP</text>
   <line x1="468" y1="759" x2="1026" y2="759" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="771">P8.1</text><text x="514" y="771">Polymerdosierung Entwässerung (FHM)</text><text x="780" y="771">ProMinent Sigma S1Cb, KMP</text>
+  <text x="476" y="771">WP1.1</text><text x="514" y="771">Rechengutwaschpresse mit Förderschnecke</text><text x="780" y="771">Waschpresse → Container</text>
   <line x1="468" y1="775" x2="1026" y2="775" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="787">WP1.1</text><text x="514" y="787">Rechengutwaschpresse mit Förderschnecke</text><text x="780" y="787">Waschpresse → Container</text>
+  <text x="476" y="787">SK2.1</text><text x="514" y="787">Sandklassierer (Sandfanggut)</text><text x="780" y="787">Schneckenklassierer → Container</text>
   <line x1="468" y1="791" x2="1026" y2="791" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="803">SK2.1</text><text x="514" y="803">Sandklassierer (Sandfanggut)</text><text x="780" y="803">Schneckenklassierer → Container</text>
+  <text x="476" y="803">VE-1</text><text x="514" y="803">Voreindicker mit Krählwerk</text><text x="780" y="803">Rundbecken, statisch, Sohle 361,00 m NN</text>
   <line x1="468" y1="807" x2="1026" y2="807" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="819">VE-1</text><text x="514" y="819">Voreindicker mit Krählwerk</text><text x="780" y="819">Rundbecken, statisch, Sohle 361,00 m NN</text>
+  <text x="476" y="819">Z6.1</text><text x="514" y="819">Zentrifuge Schlammentwässerung</text><text x="780" y="819">Dekanter, Polymerkonditionierung</text>
   <line x1="468" y1="823" x2="1026" y2="823" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="835">Z6.1</text><text x="514" y="835">Zentrifuge Schlammentwässerung</text><text x="780" y="835">Dekanter, Polymerkonditionierung</text>
+  <text x="476" y="835">FS6.1</text><text x="514" y="835">Förderschnecke Schlammkuchen</text><text x="780" y="835">Rohrschnecke → Silo SI6.1</text>
   <line x1="468" y1="839" x2="1026" y2="839" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="851">FS6.1</text><text x="514" y="851">Förderschnecke Schlammkuchen</text><text x="780" y="851">Rohrschnecke → Silo SI6.1</text>
+  <text x="476" y="851">GS-1</text><text x="514" y="851">Gasspeicher Faulgas</text><text x="780" y="851">Doppelmembranspeicher</text>
   <line x1="468" y1="855" x2="1026" y2="855" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="867">GS-1</text><text x="514" y="867">Gasspeicher Faulgas</text><text x="780" y="867">Doppelmembranspeicher</text>
+  <text x="476" y="867">V6.1</text><text x="514" y="867">Gasverdichter BHKW-Zuleitung</text><text x="780" y="867">Seitenkanalverdichter</text>
   <line x1="468" y1="871" x2="1026" y2="871" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="883">V6.1</text><text x="514" y="883">Gasverdichter BHKW-Zuleitung</text><text x="780" y="883">Seitenkanalverdichter</text>
+  <text x="476" y="883">F6.1</text><text x="514" y="883">Gasfackel (Überschussgas)</text><text x="780" y="883">Hochtemperaturfackel</text>
   <line x1="468" y1="887" x2="1026" y2="887" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="899">F6.1</text><text x="514" y="899">Gasfackel (Überschussgas)</text><text x="780" y="899">Hochtemperaturfackel</text>
-  <line x1="468" y1="903" x2="1026" y2="903" stroke="#dce4f0" stroke-width="0.7"/>
-  <text x="476" y="915">W10.1</text><text x="514" y="915">Schlammwärmetauscher Umwälzkreis FT-1</text><text x="780" y="915">Rohr-in-Rohr, Heizwasser BHKW</text>
+  <text x="476" y="899">W10.1</text><text x="514" y="899">Schlammwärmetauscher Umwälzkreis FT-1</text><text x="780" y="899">Rohr-in-Rohr, Heizwasser BHKW</text>
   <line x1="468" y1="903" x2="1026" y2="903" stroke="#dce4f0" stroke-width="0.7"/>
 </g>
-<text x="476" y="937" fill="#1a4080" font-size="8.5" font-weight="bold">MSR-Messgeräte:</text>
+<text x="476" y="921" fill="#1a4080" font-size="8.5" font-weight="bold">MSR-Messgeräte:</text>
 <g fill="#334860" font-size="7.2">
-  <text x="476" y="950.0">FI 101</text><text x="526" y="950.0">Durchfluss Zulauf (MID)</text>
-  <text x="476" y="962.5">QI 102</text><text x="526" y="962.5">Spektralsonde Zulauf (CSB, AFS)</text>
-  <text x="476" y="975.0">LI 103</text><text x="526" y="975.0">Füllstand Pumpensumpf</text>
-  <text x="476" y="987.5">FI 104</text><text x="526" y="987.5">Luftmenge Sandfang</text>
-  <text x="476" y="1000.0">QI 105</text><text x="526" y="1000.0">Trübung/AFS Ablauf VK</text>
-  <text x="476" y="1012.5">FIC 201</text><text x="526" y="1012.5">Luftmenge Gebläsestation</text>
-  <text x="476" y="1025.0">QI 301</text><text x="526" y="1025.0">O₂-Sonde Nitrifikation</text>
-  <text x="476" y="1037.5">LI 401</text><text x="526" y="1037.5">Schlammspiegel NK</text>
-  <text x="476" y="1050.0">FI 402</text><text x="526" y="1050.0">Rücklaufschlamm gesamt</text>
-  <text x="476" y="1062.5">FI 403</text><text x="526" y="1062.5">Überschussschlamm</text>
-  <text x="476" y="1075.0">QI 501</text><text x="526" y="1075.0">Ablauf CSB / NH₄-N / P-ges</text>
-  <text x="476" y="1087.5">FI 502</text><text x="526" y="1087.5">Ablauf-Durchfluss (MID)</text>
-  <text x="476" y="1100.0">QI 503</text><text x="526" y="1100.0">Abschlagqualität</text>
-  <text x="752" y="950.0">pH 504</text><text x="802" y="950.0">pH-Wert Ablauf</text>
-  <text x="752" y="962.5">FI 601</text><text x="802" y="962.5">Umwälzstrom Faulturm</text>
-  <text x="752" y="975.0">PI 602/604</text><text x="802" y="975.0">Saugdruck P10.1 / P10.2</text>
-  <text x="752" y="987.5">TI 606</text><text x="802" y="987.5">Temperatur Faulturm</text>
-  <text x="752" y="1000.0">LI 607</text><text x="802" y="1000.0">Füllstand Faulturm</text>
-  <text x="752" y="1012.5">FI 608</text><text x="802" y="1012.5">Faulgasmenge</text>
-  <text x="752" y="1025.0">LI 609</text><text x="802" y="1025.0">Füllstand Gasspeicher GS-1</text>
-  <text x="752" y="1037.5">PI 612</text><text x="802" y="1037.5">Saugdruck P6.2</text>
-  <text x="752" y="1050.0">FI 613</text><text x="802" y="1050.0">Dickschlamm zum FT-1 (MID)</text>
-  <text x="752" y="1062.5">PI 614</text><text x="802" y="1062.5">Enddruck P6.2</text>
-  <text x="752" y="1075.0">XA 615</text><text x="802" y="1075.0">Körperschall P6.2</text>
-  <text x="752" y="1087.5">LI 701</text><text x="802" y="1087.5">Füllstand FeCl₃-Behälter</text>
-  <text x="752" y="1100.0">FIC 702</text><text x="802" y="1100.0">Dosierstrom FeCl₃</text>
+  <text x="476" y="934">FI 101</text><text x="526" y="934">Durchfluss Zulauf (MID)</text>
+  <text x="476" y="946.5">QI 102</text><text x="526" y="946.5">Spektralsonde Zulauf (CSB, AFS)</text>
+  <text x="476" y="959">LI 103</text><text x="526" y="959">Füllstand Pumpensumpf</text>
+  <text x="476" y="971.5">FI 104</text><text x="526" y="971.5">Luftmenge Sandfang</text>
+  <text x="476" y="984">QI 105</text><text x="526" y="984">Trübung/AFS Ablauf VK</text>
+  <text x="476" y="996.5">FIC 201</text><text x="526" y="996.5">Luftmengenregelung G1.1 (Folgeregler)</text>
+  <text x="476" y="1009">QIC 301</text><text x="526" y="1009">O₂-Regelung Nitrifikation → FIC 201</text>
+  <text x="476" y="1021.5">LI 401</text><text x="526" y="1021.5">Schlammspiegel NK</text>
+  <text x="476" y="1034">FI 402</text><text x="526" y="1034">Rücklaufschlamm gesamt</text>
+  <text x="476" y="1046.5">FI 403</text><text x="526" y="1046.5">Überschussschlamm</text>
+  <text x="476" y="1059">QI 501</text><text x="526" y="1059">Ablauf CSB / NH₄-N / P-ges</text>
+  <text x="476" y="1071.5">FI 502</text><text x="526" y="1071.5">Ablauf-Durchfluss (MID)</text>
+  <text x="476" y="1084">QI 503</text><text x="526" y="1084">Abschlagqualität</text>
+  <!--QIC302L-->
+  <text x="752" y="934">pH 504</text><text x="802" y="934">pH-Wert Ablauf</text>
+  <text x="752" y="946.5">FI 601</text><text x="802" y="946.5">Umwälzstrom Faulturm</text>
+  <text x="752" y="959">PI 602/604</text><text x="802" y="959">Saugdruck P10.1 / P10.2</text>
+  <text x="752" y="971.5">TI 606</text><text x="802" y="971.5">Temperatur Faulturm</text>
+  <text x="752" y="984">LI 607</text><text x="802" y="984">Füllstand Faulturm</text>
+  <text x="752" y="996.5">FI 608</text><text x="802" y="996.5">Faulgasmenge</text>
+  <text x="752" y="1009">LI 609</text><text x="802" y="1009">Füllstand Gasspeicher GS-1</text>
+  <text x="752" y="1021.5">PI 612</text><text x="802" y="1021.5">Saugdruck P6.2</text>
+  <text x="752" y="1034">FI 613</text><text x="802" y="1034">Dickschlamm zum FT-1 (MID)</text>
+  <text x="752" y="1046.5">PI 614</text><text x="802" y="1046.5">Enddruck P6.2</text>
+  <text x="752" y="1059">XA 615</text><text x="802" y="1059">Körperschall P6.2</text>
+  <text x="752" y="1071.5">LI 701</text><text x="802" y="1071.5">Füllstand FeCl₃-Behälter</text>
+  <text x="752" y="1084">FIC 702</text><text x="802" y="1084">Dosierstrom FeCl₃</text>
 </g>
 
 <!-- ─── ANMERKUNGEN ─── -->
@@ -3995,12 +4272,12 @@ def _(
   <text x="1050" y="527" fill="#334860">Vorklärung → Vorentst.-zone (Deni, anoxisch) → Nitrifikation (aerob)</text>
   <text x="1050" y="539" fill="#334860">→ Nachklärung → Simultanfällung P (FeCl₃) → Ablauf Schwierbach</text>
   <text x="1050" y="558" fill="#1a4080">Regelungen:</text>
-  <text x="1050" y="570" fill="#334860">• O₂-Regelung: PID-Regler auf QI 301, Stellglied FU-Gebläse G1.1</text>
+  <text x="1050" y="570" fill="#334860">• Belüftung: Kaskade QIC 301 (O₂) → FIC 201 (Luftmenge) → FU G1.1</text>
   <text x="1050" y="582" fill="#334860">• RS-Verhältnis: Stufenschaltung P3.1–P3.6, Sollwert ~0,75</text>
   <text x="1050" y="594" fill="#334860">• ÜS-Menge: Zeitprogramm P5.1, Schlammalter-gesteuert</text>
   <text x="1050" y="606" fill="#334860">• Fällmitteldos.: PI-Regler auf P-ges (QI 501), Stellglied P7.1</text>
   <text x="1050" y="618" fill="#334860">• Zulaufpumpe: FU-Regelung auf Füllstand LI 103</text>
-  <text x="1050" y="630" fill="#334860">• Kalkmilch P9.1: Ein/Aus bei pH &lt; 6,8 / &gt; 7,2</text>
+  <text x="1050" y="630" fill="#334860">• pH 504: Überwachung Ablauf (Säurekapazität, Nitrifikation)</text>
   <text x="1050" y="650" fill="#1a4080">Grenzwerte Ablauf (Eigenkontrolle):</text>
   <text x="1050" y="662" fill="#334860">• CSB &lt; 75 mg/L (Erlaubnis)  |  BSB₅ &lt; 15 mg/L</text>
   <text x="1050" y="674" fill="#334860">• NH₄-N &lt; 10 mg/L  |  N-ges &lt; 18 mg/L</text>
@@ -4029,7 +4306,7 @@ def _(
 </g>
 
 </svg>
-</div>''')
+</div>''').replace("<!--QIC302-->", _qic302).replace("<!--QIC302L-->", _qic302_l))
 
         # ====== AUSSENANLAGEN TAB ======
         # Externe Pumpwerke im Einzugsgebiet – Fernwirktechnik / Außenstation PLS
